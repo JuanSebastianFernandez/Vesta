@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     PROJECT_VERSION: str = "0.1.0"
     PROJECT_DESCRIPTION: str = "Artificial Intelligence for Cibersecurity"
 
-    # Cros settings
+    # Cors settings
     CORS_ALLOW_ORIGINS: list[str] = ["http://localhost", "http://localhost:8080"]
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_METHODS: list[str] = ["*"]

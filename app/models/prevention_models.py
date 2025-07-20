@@ -2,20 +2,6 @@ from pydantic import BaseModel, Field, HttpUrl
 from typing import Any
 
 
-class FeatureVector(BaseModel):
-    section_max_entropy: float
-    size_of_stack_reserve: float
-    sections_min_virtualsize: float
-    resources_min_entropy: float
-    major_linker_version: float
-    size_of_optional_header: float
-    address_of_entry_point: float
-    sections_min_entropy: float
-    minor_operating_system_version: float
-    section_alignment: float
-    size_of_headers: float
-    loader_flags: float
-
 class StaticFinding(BaseModel):
     finding_type: str
     description: str
@@ -30,18 +16,28 @@ class MLPrediction(BaseModel):
 class AnalysisReportResponse(BaseModel):
     file_path: str
     status: str
-    amount_findings: int | None = None
-    feature_vector: FeatureVector | None = None
+    amount_findings: int
+    feature_vector: dict[str, Any] | None = None
     static_findings: list[StaticFinding] | None = None
     parsing_errors: list[dict[str, Any]] | None = None
     message: str | None = None
     ml_prediction: MLPrediction | None = None
-    secuity_status: str | None = None
+    security_status: str | None = None
 
 class AnalyzeRepoRequest(BaseModel):
     repo_url: HttpUrl = Field(
         examples = ["https://github.com/octocat/Spoon-Knife"],
         description = "URL of the repository to analyze."
+    )
+    repo_name: str = Field(
+        examples = ["Spoon-Knife-Project"],
+        description = "Name of the local folder to clone/update repository"
+    )
+    # Add commit hash when need to analyze a especific commit of a git repository
+    commit_hash: str | None = Field(
+        default = None,
+        examples = ["a1b2c3d4e5f6sadddda45er45rwe5vbvjhhrihgdfs"],
+        description = "Hash of the specific commit to analyze. If it's none, the last one is used (Head location)"
     )
 
 
@@ -51,20 +47,20 @@ if __name__ == "__main__":
         file_path="/home/documents/js", 
         status="SUCCESS",
         amount_findings=1,
-        feature_vector=FeatureVector(
-            section_max_entropy=1.0,
-            size_of_stack_reserve=2.0,
-            sections_min_virtualsize=3.0,
-            resources_min_entropy=4.0,
-            major_linker_version=5.0,
-            size_of_optional_header=6.0,
-            address_of_entry_point=7.0,
-            sections_min_entropy=8.0,
-            minor_operating_system_version=9.0,
-            section_alignment=10.0,
-            size_of_headers=11.0,
-            loader_flags=12.0
-        ),
+        feature_vector={
+            "SectionsMaxEntropy": 5.149747596305933,
+            "SizeOfStackReserve": 2.0,
+            "SectionsMinVirtualsize": 192.0,
+            "ResourcesMinEntropy": -0.0,
+            "MajorLinkerVersion": 1.0,
+            "SizeOfOptionalHeader": 1.0,
+            "AddressOfEntryPoint": 0.0,
+            "SectionsMinEntropy": 4.991356541513986,
+            "MinorOperatingSystemVersion": 0.0,
+            "SectionAlignment": 0.0,
+            "SizeOfHeaders": 1.0,
+            "LoaderFlags": 0.0
+        },
         static_findings=[
             StaticFinding(
                 finding_type="SELF_AWARE_BEHAVIOR",
@@ -98,6 +94,6 @@ if __name__ == "__main__":
             prediction_probability=0.95,
             prediction_binary=1
         ),
-        secuity_status="BENIGN"
+        security_status="BENIGN"
     )
     print(analyzer)

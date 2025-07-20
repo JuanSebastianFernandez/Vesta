@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import Settings
-from app.api.v1.endpoints import health
+from app.api.v1.endpoints import health, prevention
 
 
 # Start FastAPI application
@@ -19,6 +19,7 @@ app.add_middleware(
 
 # Routers API
 app.include_router(health.router)
+app.include_router(prevention.router)
 
 # Endpoints
 @app.get("/")
