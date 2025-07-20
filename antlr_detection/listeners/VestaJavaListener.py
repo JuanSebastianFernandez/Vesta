@@ -1,9 +1,9 @@
 import re
 import numpy as np
 from antlr4 import CommonTokenStream
-from grammars.Java.JavaParser import JavaParser
-from grammars.Java.JavaParserListener import JavaParserListener
-from signatures.finding_types import JavaSignatures, SENSITIVE_PATH_REGEX_GLOBAL
+from antlr_detection.grammars.Java.JavaParser import JavaParser
+from antlr_detection.grammars.Java.JavaParserListener import JavaParserListener
+from antlr_detection.Signatures.finding_types import JavaSignatures, SENSITIVE_PATH_REGEX_GLOBAL
 from typing import List, Dict, Set, Tuple
 
 

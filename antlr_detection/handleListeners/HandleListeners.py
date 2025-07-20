@@ -63,45 +63,45 @@ class CustomErrorListener(ErrorListener):
 # and the name of the start rule
 LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
     '.java': {
-        'lexer_module': 'grammars.Java.JavaLexer',
-        'parser_module': 'grammars.Java.JavaParser',
-        'listener_module': 'listeners.VestaJavaListener',
+        'lexer_module': 'antlr_detection.grammars.Java.JavaLexer',
+        'parser_module': 'antlr_detection.grammars.Java.JavaParser',
+        'listener_module': 'antlr_detection.listeners.VestaJavaListener',
         'start_rule': 'compilationUnit',
         'lexer_class_name': 'JavaLexer', # Class name within the .py module
         'parser_class_name': 'JavaParser',
         'listener_class_name': 'VestaJavaListener'
     },
     '.py': {
-        'lexer_module': 'grammars.Python.PythonLexer',
-        'parser_module': 'grammars.Python.PythonParser',
-        'listener_module': 'listeners.VestaPythonListener',
+        'lexer_module': 'antlr_detection.grammars.Python.PythonLexer',
+        'parser_module': 'antlr_detection.grammars.Python.PythonParser',
+        'listener_module': 'antlr_detection.listeners.VestaPythonListener',
         'start_rule': 'file_input',
         'lexer_class_name': 'PythonLexer',
         'parser_class_name': 'PythonParser',
         'listener_class_name': 'VestaPythonListener'
     },
     '.c': {
-        'lexer_module': 'grammars.C.CLexer',
-        'parser_module': 'grammars.C.CParser',
-        'listener_module': 'listeners.VestaCListener',
+        'lexer_module': 'antlr_detection.grammars.C.CLexer',
+        'parser_module': 'antlr_detection.grammars.C.CParser',
+        'listener_module': 'antlr_detection.listeners.VestaCListener',
         'start_rule': 'compilationUnit',
         'lexer_class_name': 'CLexer',
         'parser_class_name': 'CParser',
         'listener_class_name': 'VestaCListener'
     },
     '.cpp': {
-        'lexer_module': 'grammars.CPP.CPP14Lexer',
-        'parser_module': 'grammars.CPP.CPP14Parser',
-        'listener_module': 'listeners.VestaCppListener',
+        'lexer_module': 'antlr_detection.grammars.CPP.CPP14Lexer',
+        'parser_module': 'antlr_detection.grammars.CPP.CPP14Parser',
+        'listener_module': 'antlr_detection.listeners.VestaCppListener',
         'start_rule': 'translationUnit',
         'lexer_class_name': 'CPP14Lexer',
         'parser_class_name': 'CPP14Parser',
         'listener_class_name': 'VestaCppListener'
     },
     '.js': {
-        'lexer_module': 'grammars.JavaScript.JavaScriptLexer',
-        'parser_module': 'grammars.JavaScript.JavaScriptParser',
-        'listener_module': 'listeners.VestaJavaScriptListener',
+        'lexer_module': 'antlr_detection.grammars.JavaScript.JavaScriptLexer',
+        'parser_module': 'antlr_detection.grammars.JavaScript.JavaScriptParser',
+        'listener_module': 'antlr_detection.listeners.VestaJavaScriptListener',
         'start_rule': 'program',
         'lexer_class_name': 'JavaScriptLexer',
         'parser_class_name': 'JavaScriptParser',
@@ -115,6 +115,17 @@ class AntlrListenerHandler:
     Handles the dynamic loading and execution of ANTLR4 lexers, parsers, and listeners
     for different programming languages to perform static analysis.
     """
+    
+    # Ignored directories completly (e.g., Git directories, Virtual environment,.....)
+    DEFAULT_IGNORED_DIRS: List[str] = ['.git', '.svn', '.hg', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist']
+    # Name file patterns ignorared (e.g., Setting files, General documentation, .....)
+    DEFAULT_IGNORED_FILE_PATTERNS: List[str] = [
+        '.gitignore', 'LICENSE', 'README.md', 'README.txt', 'package-lock.json', 
+        'yarn.lock', 'Gemfile.lock', 'Pipfile.lock', 'requirements.txt', 
+        'Dockerfile', 'Makefile', '.editorconfig', '.prettierrc', '.eslintrc',
+        '.DS_Store', 'Thumbs.db'
+    ]
+
     def __init__(self) -> None:
         """
         Initializes the AntlrListenerHandler.
@@ -246,3 +257,30 @@ class AntlrListenerHandler:
                 "feature_vector": {},
                 "static_findings": []
             }
+    
+    def analyze_directory(self, directory_path: str) -> List[Dict[str, Any]]:
+        """
+        Analyzes all supported source code files in a directory and its subdirectories recursively,
+        ignoring specified directories and file patterns.
+
+        Args:
+            directory_path (str): The path to the directory to analyze.
+
+        Returns:
+            List[Dict[str, Any]]: A list of dictionaries, where each dictionary is an analysis report for a file.
+        """
+        reports: List[Dict[str, Any]] = []
+        for root, dirs, files in os.walk(directory_path):
+            # --- Filter Ignored Directories ---
+            # Modifica 'dirs' in-place para que os.walk no entre en ellos
+            dirs[:] = [d for d in dirs if d not in self.DEFAULT_IGNORED_DIRS]
+
+            for file_name in files:
+                # --- Filter Ignored Files---
+                if file_name in self.DEFAULT_IGNORED_FILE_PATTERNS:
+                    continue # Skip file
+
+                file_path = os.path.join(root, file_name)
+                report = self.analyze_file(file_path)
+                reports.append(report)
+        return reports

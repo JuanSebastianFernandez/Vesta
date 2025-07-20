@@ -2,10 +2,10 @@ import re
 import numpy as np
 from antlr4 import CommonTokenStream, ParserRuleContext, Token
 from antlr4.tree.Tree import TerminalNode 
-from grammars.C.CLexer import CLexer 
-from grammars.C.CParser import CParser 
-from grammars.C.CListener import CListener 
-from signatures.finding_types import CSignatures, SENSITIVE_PATH_REGEX_GLOBAL
+from antlr_detection.grammars.C.CLexer import CLexer 
+from antlr_detection.grammars.C.CParser import CParser 
+from antlr_detection.grammars.C.CListener import CListener 
+from antlr_detection.Signatures.finding_types import CSignatures, SENSITIVE_PATH_REGEX_GLOBAL
 from typing import List, Dict, Set, Tuple
 
 

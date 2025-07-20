@@ -2,10 +2,10 @@ import re
 import numpy as np
 from antlr4 import CommonTokenStream, ParserRuleContext
 from antlr4.tree.Tree import TerminalNode 
-from grammars.Python.PythonLexer import PythonLexer 
-from grammars.Python.PythonParser import PythonParser 
-from grammars.Python.PythonParserListener import PythonParserListener 
-from signatures.finding_types import PythonSignatures, SENSITIVE_PATH_REGEX_GLOBAL
+from antlr_detection.grammars.Python.PythonLexer import PythonLexer 
+from antlr_detection.grammars.Python.PythonParser import PythonParser 
+from antlr_detection.grammars.Python.PythonParserListener import PythonParserListener 
+from antlr_detection.Signatures.finding_types import PythonSignatures, SENSITIVE_PATH_REGEX_GLOBAL
 
 
 def calculate_entropy(data: bytes) -> float:

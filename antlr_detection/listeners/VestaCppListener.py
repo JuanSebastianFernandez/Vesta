@@ -2,10 +2,10 @@ import re
 import numpy as np
 from antlr4 import CommonTokenStream, ParserRuleContext, Token
 from antlr4.tree.Tree import TerminalNode 
-from grammars.CPP.CPP14Lexer import CPP14Lexer 
-from grammars.CPP.CPP14Parser import CPP14Parser 
-from grammars.CPP.CPP14ParserListener import CPP14ParserListener 
-from signatures.finding_types import CppSignatures, SENSITIVE_PATH_REGEX_GLOBAL 
+from antlr_detection.grammars.CPP.CPP14Lexer import CPP14Lexer 
+from antlr_detection.grammars.CPP.CPP14Parser import CPP14Parser 
+from antlr_detection.grammars.CPP.CPP14ParserListener import CPP14ParserListener 
+from antlr_detection.Signatures.finding_types import CppSignatures, SENSITIVE_PATH_REGEX_GLOBAL 
 from typing import List, Dict, Set, Tuple
 
 
