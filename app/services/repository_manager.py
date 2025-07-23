@@ -59,9 +59,9 @@ class RepositoryManager:
         
         try:
             repo = git.Repo(repo_path)
+            origin = repo.remotes.origin
             # Fetch all branches and tags
-            for remote in repo.remotes:
-                remote.fetch()
+            origin.fetch()
 
             if commit_hash:
                 # Checkout to the specific commit
@@ -69,8 +69,19 @@ class RepositoryManager:
                 repo.git.checkout(commit_hash)
             else:
                 # Pull the latest changes from the remote tracking branch
+                default_branch_name = 'main' # 'main' default
+                if 'main' not in repo.heads:
+                    # If not exists main, try master
+                    if 'master' in repo.heads:
+                        default_branch_name = 'master'
+                    else:
+                        # If not exists a tipical branch the logic may be more complex
+                        raise RepositoryError("Not is possible update the HEAD to main or master branch, please delete repository and clone again.")
+                if repo.head.is_detached:
+                    print(f"HEAD is in 'detached'. Moving to branch '{default_branch_name}'...")
+                    repo.heads[default_branch_name].checkout()
+
                 print(f"Update repository '{repo_name}' (pull)...")
-                origin = repo.remotes.origin
                 origin.pull() # Update current branch
             
             print(f"Repository '{repo_name}' update succesfully.")
