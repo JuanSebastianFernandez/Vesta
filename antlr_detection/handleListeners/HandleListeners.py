@@ -115,7 +115,7 @@ class AntlrListenerHandler:
     Handles the dynamic loading and execution of ANTLR4 lexers, parsers, and listeners
     for different programming languages to perform static analysis.
     """
-    
+
     # Ignored directories completly (e.g., Git directories, Virtual environment,.....)
     DEFAULT_IGNORED_DIRS: List[str] = ['.git', '.svn', '.hg', '.venv', 'venv', 'node_modules', '__pycache__', 'build', 'dist']
     # Name file patterns ignorared (e.g., Setting files, General documentation, .....)
@@ -182,8 +182,8 @@ class AntlrListenerHandler:
                 "status": "UNSUPPORTED_LANGUAGE",
                 "message": f"File type not supported for ANTLR analysis: {file_extension}",
                 "amount_findings": 0,
-                "feature_vector": {},
-                "static_findings": []
+                "static_findings": [],
+                "original_code": ""
             }
 
         config: Dict[str, str] = LANGUAGE_CONFIGS_MAP[file_extension]
@@ -227,6 +227,7 @@ class AntlrListenerHandler:
             report["amount_findings"] = len(report["static_findings"])
             report["file_path"] = file_path
             report["status"] = "SUCCESS"
+
             
             # Because parsing analyzes the entire syntax, it may find syntax errors generating a warning that we can include in the report.
             if error_listener.errors:
