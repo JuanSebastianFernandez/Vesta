@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     # Set GitHub/GitLab Webhooks (samples for testing purposes)
     GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "secretgithubkey")
     GITLAB_WEBHOOK_SECRET: str = os.getenv("GITLAB_WEBHOOK_SECRET", "secretgitlabkey")
+    AVAILABLE_SERVER: bool = bool(os.getenv("AVAILABLE_SERVER", "false"))
+    PASSWORD_POSTGRESQL: str = os.getenv("PASSWORD_POSTGRESQL", "vesta_password")
+    ROLE_NAME_POSTGRESQL: str = os.getenv("ROLE_NAME_POSTGRESQL", "vesta_role")
+    SERVER_WEB: str = os.getenv("SERVER_WEB", "")
+
+    TRANSFORMER_MODEL_NAME: str = "microsoft/codebert-base"
+
+    @property
+    def URL_DATABASE(self) -> str:
+        if self.AVAILABLE_SERVER:
+            return self.SERVER_WEB
+        else:
+            return f"postgresql://{self.ROLE_NAME_POSTGRESQL}:{self.PASSWORD_POSTGRESQL}@localhost:5432/vesta_db"
+
 
 
 settings = Settings()   # Only one called we don't need more calls in other classes
@@ -55,4 +69,6 @@ if __name__ == "__main__":
     print(settings.SCALER_PATH)
     print(settings.CLONED_REPOS_BASE_DIR)
     print(os.path.exists(settings.CLONED_REPOS_BASE_DIR))
+    print(settings.AVAILABLE_SERVER)
+    print(settings.URL_DATABASE)
 

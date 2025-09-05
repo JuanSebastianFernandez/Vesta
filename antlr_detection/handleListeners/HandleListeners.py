@@ -69,7 +69,8 @@ LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
         'start_rule': 'compilationUnit',
         'lexer_class_name': 'JavaLexer', # Class name within the .py module
         'parser_class_name': 'JavaParser',
-        'listener_class_name': 'VestaJavaListener'
+        'listener_class_name': 'VestaJavaListener',
+        'language': 'Java'
     },
     '.py': {
         'lexer_module': 'antlr_detection.grammars.Python.PythonLexer',
@@ -78,7 +79,8 @@ LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
         'start_rule': 'file_input',
         'lexer_class_name': 'PythonLexer',
         'parser_class_name': 'PythonParser',
-        'listener_class_name': 'VestaPythonListener'
+        'listener_class_name': 'VestaPythonListener',
+        'language': 'Python'
     },
     '.c': {
         'lexer_module': 'antlr_detection.grammars.C.CLexer',
@@ -87,7 +89,8 @@ LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
         'start_rule': 'compilationUnit',
         'lexer_class_name': 'CLexer',
         'parser_class_name': 'CParser',
-        'listener_class_name': 'VestaCListener'
+        'listener_class_name': 'VestaCListener',
+        'language': 'C'
     },
     '.cpp': {
         'lexer_module': 'antlr_detection.grammars.CPP.CPP14Lexer',
@@ -96,7 +99,8 @@ LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
         'start_rule': 'translationUnit',
         'lexer_class_name': 'CPP14Lexer',
         'parser_class_name': 'CPP14Parser',
-        'listener_class_name': 'VestaCppListener'
+        'listener_class_name': 'VestaCppListener',
+        'language': 'C++'
     },
     '.js': {
         'lexer_module': 'antlr_detection.grammars.JavaScript.JavaScriptLexer',
@@ -105,7 +109,8 @@ LANGUAGE_CONFIGS_MAP: Dict[str, Dict[str, str]] = {
         'start_rule': 'program',
         'lexer_class_name': 'JavaScriptLexer',
         'parser_class_name': 'JavaScriptParser',
-        'listener_class_name': 'VestaJavaScriptListener'
+        'listener_class_name': 'VestaJavaScriptListener',
+        'language': 'JavaScript'
     }
 }
 
@@ -183,7 +188,8 @@ class AntlrListenerHandler:
                 "message": f"File type not supported for ANTLR analysis: {file_extension}",
                 "amount_findings": 0,
                 "static_findings": [],
-                "original_code": ""
+                "original_code": "",
+                "language": "UNSUPPORTED"
             }
 
         config: Dict[str, str] = LANGUAGE_CONFIGS_MAP[file_extension]
@@ -227,6 +233,7 @@ class AntlrListenerHandler:
             report["amount_findings"] = len(report["static_findings"])
             report["file_path"] = file_path
             report["status"] = "SUCCESS"
+            report["language"] = config["language"]
 
             
             # Because parsing analyzes the entire syntax, it may find syntax errors generating a warning that we can include in the report.
@@ -245,10 +252,11 @@ class AntlrListenerHandler:
         except ImportError as e:
             return {
                 "file_path": file_path,
-                "status": "CONFIGURATION_ERROR",
+                "status": "ANALYSIS_FAILED",
                 "message": f"Configuration error (module/class not found): {str(e)}. Check paths in LANGUAGE_CONFIGS_MAP.",
                 "feature_vector": {},
-                "static_findings": []
+                "static_findings": [],
+                "language": ""
             }
         except Exception as e:
             return {
@@ -256,7 +264,8 @@ class AntlrListenerHandler:
                 "status": "ANALYSIS_FAILED",
                 "message": f"Unexpected failure during analysis: {str(e)}",
                 "feature_vector": {},
-                "static_findings": []
+                "static_findings": [],
+                "language": ""
             }
     
     def analyze_directory(self, directory_path: str) -> List[Dict[str, Any]]:

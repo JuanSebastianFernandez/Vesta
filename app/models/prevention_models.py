@@ -1,99 +1,102 @@
-from pydantic import BaseModel, Field, HttpUrl
-from typing import Any
+import datetime
+from typing import Any, Optional
+from sqlmodel import SQLModel, Field, Column, Relationship, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import VECTOR
 
 
-class StaticFinding(BaseModel):
-    finding_type: str
-    description: str
-    line: int
-    severity: str
-
-class MLPrediction(BaseModel):
-    prediction_probability: float
-    prediction_binary: int
+#---------------- Repository Models ----------------------
+class RepositoryBase(SQLModel):
+    name: str = Field(index=True, unique=True)
+    url: str = Field(index=True, unique=True)
+    commit_hash: Optional[str] = Field(default="main")
 
 
-class AnalysisReportResponse(BaseModel):
-    file_path: str
-    status: str
+class Repository(RepositoryBase, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    reports: list["Report"] = Relationship(back_populates="repository")
+
+class RepositoryCreate(RepositoryBase):
+    pass # Don't need aditional fields
+
+class RepositoryRead(RepositoryBase):
+    id: int
+
+# --------------- Report Models ---------------------
+class ReportCore(SQLModel):
+    file_hash: str = Field(index=True, unique=True, max_length=64)
+    file_name: Optional[str] = Field(default=None, index=True, max_length=255)
+    language: str = Field(index=True, max_length=20)
+    label: Optional[int] = Field(default=None, index=True)
     amount_findings: int
-    feature_vector: dict[str, Any] | None = None
-    static_findings: list[StaticFinding] | None = None
-    parsing_errors: list[dict[str, Any]] | None = None
-    message: str | None = None
-    ml_prediction: MLPrediction | None = None
-    security_status: str | None = None
+    antlr_report: list[dict[str, Any]] = Field(sa_column=Column(JSONB))
+    antlr_features: dict[str, Any] = Field(sa_column=Column(JSONB))
 
-class AnalyzeRepoRequest(BaseModel):
-    repo_url: HttpUrl = Field(
-        examples = ["https://github.com/octocat/Spoon-Knife"],
-        description = "URL of the repository to analyze."
-    )
-    repo_name: str = Field(
-        examples = ["Spoon-Knife-Project"],
-        description = "Name of the local folder to clone/update repository"
-    )
-    # Add commit hash when need to analyze a especific commit of a git repository
-    commit_hash: str | None = Field(
-        default = None,
-        examples = ["a1b2c3d4e5f6sadddda45er45rwe5vbvjhhrihgdfs"],
-        description = "Hash of the specific commit to analyze. If it's none, the last one is used (Head location)"
-    )
+class ReportBase(ReportCore):
+    source_code: str = Field(sa_column=Column(Text))
+    codebert_embedding: Optional[list[float]] = Field(default=None, sa_column=Column(VECTOR(768)))
+
+class Report(ReportBase, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    analysis_date: datetime.datetime = Field(default_factory=datetime.datetime.utcnow, nullable=False, index=True)
+    repository_id: Optional[int] = Field(default=None, foreign_key="repository.id")
+    repository: Optional[Repository] = Relationship(back_populates="reports")
+    
+class ReportCreate(ReportBase):
+    pass
+
+class ReportRead(ReportCore):
+    security_status: Optional[str] = None
+    message: Optional[str] = None
+
+# ----------- Mixed models for more complete responses ------------
+class ReportReadWithRepository(ReportRead):
+    repository: Optional[RepositoryRead] = None
+
+class RepositoryReadWithReports(RepositoryRead):
+    reports: list[ReportRead] = []
 
 
 if __name__ == "__main__":
     # Test for making objects and validate that classes are working well
-    analyzer = AnalysisReportResponse(
-        file_path="/home/documents/js", 
-        status="SUCCESS",
-        amount_findings=1,
-        feature_vector={
-            "SectionsMaxEntropy": 5.149747596305933,
-            "SizeOfStackReserve": 2.0,
-            "SectionsMinVirtualsize": 192.0,
-            "ResourcesMinEntropy": -0.0,
-            "MajorLinkerVersion": 1.0,
-            "SizeOfOptionalHeader": 1.0,
-            "AddressOfEntryPoint": 0.0,
-            "SectionsMinEntropy": 4.991356541513986,
-            "MinorOperatingSystemVersion": 0.0,
-            "SectionAlignment": 0.0,
-            "SizeOfHeaders": 1.0,
-            "LoaderFlags": 0.0
-        },
-        static_findings=[
-            StaticFinding(
-                finding_type="SELF_AWARE_BEHAVIOR",
-                description="Code attempts to access its own execution path",
-                line=2,
-                severity="HIGH"
-            ),
-            StaticFinding(
-                finding_type="IMPROPER_ERROR_HANDLING",
-                description="Code contains a string that appears to be a sensitive system file",
-                line=1,
-                severity="MEDIUM"
-            )
-        ],
-        parsing_errors=[
-            {
-                "line": 1,
-                "column": 20,
-                "message": "extraneous input ':' expecting {')', '*', '**', 'type', 'match', 'case', '_', NAME}",
-                "offending_symbol": ":"
-            },
-            {
-                "line": 2,
-                "column": 9,
-                "message": "mismatched input '(' expecting ')'",
-                "offending_symbol": "("
-            }
-        ],
-        message="Analysis successful",
-        ml_prediction=MLPrediction(
-            prediction_probability=0.95,
-            prediction_binary=1
-        ),
-        security_status="BENIGN"
-    )
-    print(analyzer)
+    from db.sintetic_data import sintetic_data
+
+    # Create a repository Object
+    repository = RepositoryCreate(name="GenSQLDatasets", url="https://github.com/JuanSebastianFernandez/GenSQLDatasets")
+    # Simulated pass before insert or update db
+    # db_repository = Repository.model_validate(repository)     # Tipical way to insert in db
+    db_repository = Repository(**repository.model_dump(), id=1)
+    # Read repository
+    db_repository_read = RepositoryRead.model_validate(db_repository)
+    print(f"---------------------- Repository read ---------------\n")
+    print(db_repository_read.model_dump())
+    print("\n"*3)
+
+    # Reports
+    data = sintetic_data[0]
+    report = ReportCreate(file_hash="asdf645asdafdf654asfasdasd44564af654asdf654adsf", 
+                        source_code=data.get("original_code", ""),
+                        language=data.get("language", "Not Language"),
+                        label=0,
+                        amount_findings = data.get("amount_findings", 0),
+                        antlr_report=data.get("static_findings", [{"Report":"Without Report"}]),
+                        antlr_features=data.get("antlr_features", {"Features":"Without Features"}),
+                        codebert_embedding=data.get("codebert_embedding"))
+    
+    db_report = Report(**report.model_dump(), id=1, repository = db_repository)
+    db_report_read = ReportRead.model_validate(db_report)
+    print(f"---------------------- Report read ---------------\n")
+    print(db_report_read.model_dump())
+    print("\n"*3)
+
+
+    # Read Repos with their Reports
+    db_repository_read_with_reports = RepositoryReadWithReports(**db_repository_read.model_dump(), reports=[db_report_read])
+    print(f"---------------------- Repository read with reports ---------------\n") 
+    print(db_repository_read_with_reports.model_dump())
+    print("\n"*3)
+
+    # Read Reports with their Repos
+    db_report_read_with_repository = ReportReadWithRepository(**db_report_read.model_dump(), repository=db_repository_read)
+    print(f"---------------------- Report read with repository ---------------\n")
+    print(db_report_read_with_repository.model_dump())

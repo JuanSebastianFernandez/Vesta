@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import Settings
 from app.api.v1.endpoints import health, prevention
-
+from db.database import create_db_and_tables
 
 # Start FastAPI application
 app = FastAPI()
@@ -26,3 +26,6 @@ app.include_router(prevention.router)
 async def read_root():
     return {"message": "Welcome to VESTA Project API"}
 
+@app.on_event("startup")
+def on_startup():
+    create_db_and_tables()
