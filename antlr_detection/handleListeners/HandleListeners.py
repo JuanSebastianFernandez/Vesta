@@ -201,9 +201,10 @@ class AntlrListenerHandler:
             ParserClass: Type[Any] = self._load_class_dynamically(config['parser_module'], config['parser_class_name'])
             ListenerClass: Type[Any] = self._load_class_dynamically(config['listener_module'], config['listener_class_name'])
             start_rule_name: str = config['start_rule']
+            with open(file_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                source_code = f.read()
 
-
-            input_stream: FileStream = FileStream(file_path, encoding='utf-8', errors='ignore')
+            input_stream: FileStream = FileStream(file_path, encoding='utf-8-sig', errors='ignore')
             
             lexer: Any = LexerClass(input_stream)
             lexer.removeErrorListeners()  # Format default syntax errors
@@ -230,6 +231,7 @@ class AntlrListenerHandler:
             walker.walk(listener_instance, tree)
             
             report: Dict[str, Any] = listener_instance.get_analysis_report()
+            report["original_code"] = source_code
             report["amount_findings"] = len(report["static_findings"])
             report["file_path"] = file_path
             report["status"] = "SUCCESS"
@@ -238,6 +240,7 @@ class AntlrListenerHandler:
             
             # Because parsing analyzes the entire syntax, it may find syntax errors generating a warning that we can include in the report.
             if error_listener.errors:
+                report["original_code"] = source_code
                 report["status"] = "PARSING_ERRORS"
                 report["parsing_errors"] = error_listener.errors
                 report["static_findings"].insert(0, {

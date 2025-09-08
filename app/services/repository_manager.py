@@ -9,6 +9,7 @@ from typing import Dict, Any, List
 from app.core.config import settings
 from app.core.exceptions import RepositoryError, AnalysisError
 from antlr_detection.handleListeners.HandleListeners import AntlrListenerHandler
+from app.utilities.logger import logger
 
 
 class RepositoryManager:
@@ -33,19 +34,22 @@ class RepositoryManager:
         repo_path: Path = self._get_repo_path(repo_name)
 
         if repo_path.exists():
+            logger.error(f"The directory '{repo_name}' already exists in '{self.cloned_repos_base_dir}'.")
             raise RepositoryError(f"The directory '{repo_name}' already exists in '{self.cloned_repos_base_dir}'.")
         
         try:
-            print(f"Repository cloned '{repo_url}' in '{repo_path}'...")
+            logger.info(f"Repository cloned '{repo_url}' in '{repo_path}'...")
             repo = git.Repo.clone_from(repo_url, repo_path)
             if commit_hash:
-                print(f"Checkout to the specific commit: {commit_hash}")
+                logger.info(f"Checkout to the specific commit: {commit_hash}")
                 repo.git.checkout(commit_hash)
-            print("Repository has been cloned succesfully.")
+            logger.info("Repository has been cloned succesfully.")
             return repo_path
         except git.exc.GitCommandError as e:  # type: ignore
+            logger.error(f"Git command error during cloning: {e}")
             raise RepositoryError(f"Error executing Git command to clone: {e}")
         except Exception as e:
+            logger.error(f"Unexpected error during cloning: {e}")
             raise RepositoryError(f"Unexpected Error cloning repository: {e}")
 
     def _update_head_repository(self, repo_name: str, commit_hash: str|None = None) -> Path:
@@ -55,6 +59,7 @@ class RepositoryManager:
         """
         repo_path: Path = self._get_repo_path(repo_name)
         if not repo_path.exists():
+            logger.error(f"Repository '{repo_name}' doesn't exist in a local folder. Clone it first.")
             raise RepositoryError(f"Repository '{repo_name}' doesn't exist in a local folder. Clone it first.")
         
         try:
@@ -65,7 +70,7 @@ class RepositoryManager:
 
             if commit_hash:
                 # Checkout to the specific commit
-                print(f"Update repository '{repo_name}' and checkout to the specific commit: {commit_hash}...")
+                logger.info(f"Update repository '{repo_name}' and checkout to the specific commit: {commit_hash}...")
                 repo.git.checkout(commit_hash)
             else:
                 # Pull the latest changes from the remote tracking branch
@@ -76,19 +81,22 @@ class RepositoryManager:
                         default_branch_name = 'master'
                     else:
                         # If not exists a tipical branch the logic may be more complex
+                        logger.error(f"Neither 'main' nor 'master' branches exist in the repository '{repo_name}'. Cannot perform pull operation.")
                         raise RepositoryError("Not is possible update the HEAD to main or master branch, please delete repository and clone again.")
                 if repo.head.is_detached:
-                    print(f"HEAD is in 'detached'. Moving to branch '{default_branch_name}'...")
+                    logger.info(f"HEAD is in 'detached'. Moving to branch '{default_branch_name}'...")
                     repo.heads[default_branch_name].checkout()
 
-                print(f"Update repository '{repo_name}' (pull)...")
+                logger.info(f"Update repository '{repo_name}' (pull)...")
                 origin.pull() # Update current branch
             
-            print(f"Repository '{repo_name}' update succesfully.")
+            logger.info(f"Repository '{repo_name}' update succesfully.")
             return repo_path
         except git.exc.GitCommandError as e: # type: ignore
+            logger.error(f"Git command error during pull/checkout: {e}")
             raise RepositoryError(f"Error executing Git command for pull/checkout: {e}")
         except Exception as e:
+            logger.error(f"Unexpected error during pull/checkout: {e}")
             raise RepositoryError(f"Unexpected error updating or moving head repository: {e}")
 
     def process_repository(self, repo_url: str, repo_name: str, commit_hash: str | None = None) -> List[Dict[str, Any]]:
@@ -121,11 +129,12 @@ class RepositoryManager:
         Analyze every code file supported in a repository cloned using AntlrListenerHandler.
         """
         if not repo_path.is_dir():
+            logger.error(f"The provided path '{repo_path}' isn't a valid directory for analysis.")
             raise AnalysisError(f"The provided path '{repo_path}' isn't a valid directory for analysis.")
         
-        print(f"Start analyzing static code for the repository located in: {repo_path}")
+        logger.info(f"Start analyzing static code for the repository located in: {repo_path}")
         reports = self.antlr_handler.analyze_directory(str(repo_path))
-        print(f"Code static analysis completed for {len(reports)} files.")
+        logger.info(f"Code static analysis completed for {len(reports)} files.")
         return reports
 
     def cleanup_repository(self, repo_name: str) -> None:
@@ -134,7 +143,7 @@ class RepositoryManager:
         if not repo_path.exists():
             print(f"Repository {repo_name} not found locally.")
             return
-            
+        logger.info(f"Deleting local repository: {repo_path}")
         print(f"Deleting local repository: {repo_path}")
         
         def handle_remove_readonly(func, path, exc):
@@ -147,20 +156,20 @@ class RepositoryManager:
         
         try:
             shutil.rmtree(repo_path, onerror=handle_remove_readonly)
-            print("Repository was deleted successfully.")
+            logger.info("Repository was deleted successfully.")
         except Exception as e:
-            print(f"Standard deletion failed: {e}")
+            logger.error(f"Standard deletion failed: {e}")
             # Fallback Method: force deletion
             try:
                 self._force_delete_repository(repo_path)
-                print("Repository was deleted successfully with force method.")
+                logger.info("Repository was deleted successfully with force method.")
             except Exception as e2:
-                print(f"Force deletion also failed: {e2}")
+                logger.error(f"Force deletion also failed: {e2}")
                 # Last resort: rename the directory
                 try:
                     backup_path = repo_path.with_suffix('.to_delete')
                     repo_path.rename(backup_path)
-                    print(f"Repository renamed to {backup_path} for manual deletion.")
+                    logger.warning(f"Repository renamed to {backup_path} for manual deletion.")
                     print("Please delete this directory manually when possible.")
                 except Exception as e3:
                     print(f"All deletion methods failed: {e3}")
@@ -193,7 +202,7 @@ class RepositoryManager:
                 
             except (OSError, PermissionError) as e:
                 if attempt < max_attempts - 1:
-                    print(f"Deletion attempt {attempt + 1} failed, retrying in 1 second...")
+                    logger.warning(f"Deletion attempt {attempt + 1} failed, retrying in 1 second...")
                     time.sleep(1)
                 else:
                     raise Exception(f"Failed to delete repository after {max_attempts} attempts: {e}")

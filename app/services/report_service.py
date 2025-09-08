@@ -172,18 +172,18 @@ class ReportService:
             if existing_repo:
                 repository = existing_repo
                 if repository_create.commit_hash:
-                    logger.info(f"Updating existing repository '{repository.name}' with new commit hash.")
+                    logger.info(f"Updating existing repository '{repository.url}' with new commit hash.")
                     repository.commit_hash = repository_create.commit_hash
                 else:
                     repository.commit_hash = "main"
             else:
                 repository = Repository(**repository_create.model_dump()) 
-                logger.info(f"Saving new repository '{repository.name}' to the database.")
+                logger.info(f"Saving new repository '{repository.url}' to the database.")
 
             self.session.add(repository)
             self.session.commit()
             self.session.refresh(repository)
-            logger.info(f"Repository '{repository.name}' saved with ID {repository.id}.")
+            logger.info(f"Repository '{repository.url}' saved with ID {repository.id}.")
 
         except SQLAlchemyError as e:
             logger.error(f"Database error while saving repository: {e}")
@@ -198,7 +198,7 @@ class ReportService:
             return [error_response] * len(raw_reports)
 
 
-        successful_raw_reports = [r for r in raw_reports if r.get("status") == "SUCCESS"]
+        successful_raw_reports = [r for r in raw_reports if r.get("status") == "SUCCESS" and r.get("original_code") not in ["", None, " ", "utf-8"]]
         try:
             if successful_raw_reports:
                 hashes = [generate_sha256_hash(r.get("original_code", "")) for r in successful_raw_reports]
@@ -302,7 +302,6 @@ if __name__ == "__main__":
 
     report_data = sintetic_data[:]
     repository_http_request = RepositoryCreate(
-        name="GenSQLDatasets-2",
         url="https://github.com/JuanSebastianFernandez/GenSQLDatasets-2",
         #commit_hash="asdad4587asfasf565asfasf587qwe56646664"
     )

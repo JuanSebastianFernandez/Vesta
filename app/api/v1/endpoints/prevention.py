@@ -40,10 +40,10 @@ async def analyze_repository_manual(request_data: RepositoryCreate, session: Ses
     try:
         raw_reports = repo_manager.process_repository(
             repo_url=str(request_data.url), 
-            repo_name=request_data.name,
+            repo_name=request_data.url.split("/")[-1].replace(".git",""),
             commit_hash=request_data.commit_hash    
         )
-        logger.info(raw_reports)
+        logger.info(f"Number of raw reports: {len(raw_reports)}")
 
         response_reports = report_service.process_and_respond(
             raw_reports=raw_reports, 
@@ -53,7 +53,7 @@ async def analyze_repository_manual(request_data: RepositoryCreate, session: Ses
         return response_reports
     
     except RepositoryError as e:
-        raise HTTPException(status_code=e.status_code, detail=f"Error in the repository: {e.detail}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Error in the repository: {e.detail}")
     except AnalysisError as e:
         raise HTTPException(status_code=e.status_code, detail=f"Error during analysis: {e.detail}")
     except ModelLoadingError as e:

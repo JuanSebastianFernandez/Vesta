@@ -254,10 +254,8 @@ class VestaCListener(CListener):
                         })
 
         # 3. Retornamos el informe final
-        original_code_text: str = self.token_stream.getText(0)
         
         final_report: dict = {
-            "original_code": original_code_text,
             "static_findings": self.static_findings,
             "behavioral_trigger_counts": behavioral_trigger_counts
         }
