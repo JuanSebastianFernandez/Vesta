@@ -25,13 +25,7 @@ repo_manager = RepositoryManager()
 async def prevention_root() -> dict[str, Any]:
     return {"message": "Prevention Module API is working well."}
 
-@router.post("/analayze-repository", 
-                status_code=status.HTTP_200_OK, 
-                summary="Start static analysis and AI prediction of a Git repository", 
-                response_model=list[ReportReadWithRepository], 
-                response_model_exclude_unset=True, 
-                response_model_exclude_none=True)
-async def analyze_repository_manual(request_data: RepositoryCreate, session: SessionDep):
+async def _analyze_repository_impl(request_data: RepositoryCreate, session: SessionDep):
     """
     Start static analysis and AI prediction of a Git repository manually.
     The repository will be cloned (or updated if it already exists) and then analyzed.
@@ -60,6 +54,26 @@ async def analyze_repository_manual(request_data: RepositoryCreate, session: Ses
         raise HTTPException(status_code=e.status_code, detail=f"Error charging ML models: {e.detail}")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unexpected error happened: {str(e)}")
+
+@router.post("/analyze-repository", 
+                status_code=status.HTTP_200_OK, 
+                summary="Start static analysis and AI prediction of a Git repository", 
+                response_model=list[ReportReadWithRepository], 
+                response_model_exclude_unset=True, 
+                response_model_exclude_none=True)
+async def analyze_repository_manual(request_data: RepositoryCreate, session: SessionDep):
+    return await _analyze_repository_impl(request_data=request_data, session=session)
+
+@router.post("/analayze-repository",
+                status_code=status.HTTP_200_OK,
+                summary="[DEPRECATED] Start static analysis and AI prediction of a Git repository",
+                response_model=list[ReportReadWithRepository],
+                response_model_exclude_unset=True,
+                response_model_exclude_none=True,
+                deprecated=True)
+async def analyze_repository_manual_legacy(request_data: RepositoryCreate, session: SessionDep):
+    logger.warning("Deprecated endpoint '/prevention/analayze-repository' used. Use '/prevention/analyze-repository' instead.")
+    return await _analyze_repository_impl(request_data=request_data, session=session)
 
 # @router.post("/webhooks/github", status_code=status.HTTP_200_OK, summary="Get and process Github webhook")
 # async def github_webhook(request: Request,
