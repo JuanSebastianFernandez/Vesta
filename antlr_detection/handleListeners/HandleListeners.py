@@ -3,6 +3,7 @@ from antlr4 import FileStream, CommonTokenStream, ParseTreeWalker, InputStream, 
 from antlr4.error.ErrorListener import ErrorListener
 import importlib.util # To import modules dynamically
 from typing import Dict, List, Any, Optional, Tuple, Type
+from app.services.feature_extractor import extract_feature_vector
 
 
 # --- Class to handle ANTLR errors ---
@@ -188,6 +189,7 @@ class AntlrListenerHandler:
                 "message": f"File type not supported for ANTLR analysis: {file_extension}",
                 "amount_findings": 0,
                 "static_findings": [],
+                "feature_vector": {},
                 "original_code": "",
                 "language": "UNSUPPORTED"
             }
@@ -232,6 +234,7 @@ class AntlrListenerHandler:
             
             report: Dict[str, Any] = listener_instance.get_analysis_report()
             report["original_code"] = source_code
+            report["feature_vector"] = extract_feature_vector(source_code=source_code, file_name=file_path)
             report["amount_findings"] = len(report["static_findings"])
             report["file_path"] = file_path
             report["status"] = "SUCCESS"

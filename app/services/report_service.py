@@ -40,8 +40,9 @@ class ReportService:
         """
         try:
             static_findings = raw_report.get("static_findings", [])
-            if not static_findings:
-                return {}
+            feature_vector = raw_report.get("feature_vector", {})
+            if not isinstance(feature_vector, dict):
+                feature_vector = {}
 
             weights = [
                 f.get("weight", 0.0) for f in static_findings
@@ -62,6 +63,7 @@ class ReportService:
                 "sum_of_weights": sum(weights),
                 "avg_weight": round(float(np.mean(weights)), 4) if weights else 0.0,
                 "max_weight": max(weights) if weights else 0.0,
+                "feature_vector": feature_vector,
                 **severity_counts,
                 **trigger_counts,
             }
