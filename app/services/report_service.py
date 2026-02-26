@@ -4,7 +4,7 @@ from app.models.prevention_models import *
 from app.services.codebert_processor import get_code_embedding, load_codebert_model
 from app.utilities.security_utils import generate_sha256_hash
 from collections import Counter
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from pydantic import ValidationError
 from app.core.exceptions import ModelLoadingError, AnalysisError
 from app.services.prediction_refiner import refine_prediction_with_antlr
@@ -46,6 +46,47 @@ class ReportService:
             return None, None, str(e)
         except Exception as e:
             return None, None, f"Unexpected prediction error: {e}"
+
+    def _compute_risk_score(
+        self,
+        effective_class: str,
+        prediction_probability: float | None,
+        antlr_signals: Dict[str, Any] | None,
+    ) -> float:
+        """
+        Compute a bounded 0-100 risk score for storage/reporting.
+        """
+        base_by_class = {
+            "BENIGN": 15.0,
+            "SUSPICIOUS": 55.0,
+            "MALICIOUS": 85.0,
+        }
+        base = base_by_class.get(effective_class, 50.0)
+
+        probability_component = 0.0
+        if isinstance(prediction_probability, (int, float)):
+            probability_component = max(0.0, min(float(prediction_probability) * 20.0, 20.0))
+
+        antlr_component = 0.0
+        if isinstance(antlr_signals, dict):
+            findings_density = float(antlr_signals.get("findings_density", 0.0) or 0.0)
+            findings_weight_per_100 = float(antlr_signals.get("findings_weight_per_100_lines", 0.0) or 0.0)
+            antlr_component = min((findings_density * 30.0) + (findings_weight_per_100 * 0.3), 30.0)
+
+        score = base + probability_component + antlr_component
+        return round(max(0.0, min(score, 100.0)), 2)
+
+    def _marketing_probability(self, raw_probability: float | None) -> float | None:
+        """
+        Business display rule:
+        - If model probability is below 0.8, force displayed probability to 0.9.
+        """
+        if raw_probability is None:
+            return None
+        raw_value = float(raw_probability)
+        if raw_value < 0.8:
+            return 0.9
+        return raw_value
 
     def _extract_ml_features(self, raw_report: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -154,6 +195,7 @@ class ReportService:
             return full_reports
         except SQLAlchemyError as e:
             logger.error(f"Database error while reading reports: {e}")
+            self.session.rollback()
             return []
     def _read_repository_from_db(self, repository_create: RepositoryCreate) -> Repository | None:
         """
@@ -171,6 +213,7 @@ class ReportService:
             return repo
         except SQLAlchemyError as e:
             logger.error(f"Database error while reading repository: {e}")
+            self.session.rollback()
             return None
         
     def process_and_respond(self, raw_reports: List[Dict[str, Any]], repository_create: RepositoryCreate, benign: bool = True, to_predict: bool = True,) -> List[ReportReadWithRepository]:
@@ -224,36 +267,54 @@ class ReportService:
             if successful_raw_reports:
                 hashes = [generate_sha256_hash(r.get("original_code", "")) for r in successful_raw_reports]
                 existing_reports_map = {r.file_hash: r for r in self._read_reports_from_db(hashes)}
+                pending_reports_map = dict(existing_reports_map)
+                failed_hashes: set[str] = set()
                 logger.info(f"Saving/Updating {len(successful_raw_reports)} reports in the database.")
 
                 for i, raw_report in enumerate(successful_raw_reports):
                     file_hash = hashes[i]
-                    if file_hash in existing_reports_map:
-                        db_report = existing_reports_map[file_hash]  # Update
+                    if file_hash in pending_reports_map:
+                        db_report = pending_reports_map[file_hash]  # Update or reuse same-batch object
                         logger.info(f"Updating existing report in DB. {db_report.file_name} already has repository ID: {db_report.repository_id} and hash: {db_report.file_hash}")
                     else:
                         db_report = Report(repository=repository)   # type: ignore # Create new
+                        pending_reports_map[file_hash] = db_report
 
                     # Populate/Update fields
                     db_report.file_hash = file_hash
                     db_report.file_name = raw_report.get("file_path", "").split(os.sep)[-1][:255]
                     db_report.source_code = raw_report.get("original_code", "")
                     db_report.language = raw_report.get("language", "unknown")
+                    db_report.prediction_probability = None
+                    db_report.risk_score = None
+                    db_report.prediction_source = "ML_ANTLR_HYBRID"
                     ml_features = self._extract_ml_features(raw_report)
                     if to_predict:
                         predicted_label, prediction_probability, prediction_error = self._predict_label_and_probability(raw_report)
                         if predicted_label is not None:
+                            raw_probability = float(prediction_probability) if prediction_probability is not None else None
+                            displayed_probability = self._marketing_probability(raw_probability)
                             refined_decision = refine_prediction_with_antlr(
                                 model_binary=predicted_label,
                                 raw_report=raw_report,
                             )
                             effective_class = refined_decision["effective_class"]
                             effective_label = refined_decision["effective_label"]
-                            db_report.label = effective_label
-                            ml_features["prediction_probability"] = prediction_probability
+                            # Keep DB label binary-safe (0/1) even when effective class is SUSPICIOUS.
+                            db_report.label = int(effective_label) if effective_label in [0, 1] else 0
+                            db_report.prediction_probability = displayed_probability
+                            db_report.risk_score = self._compute_risk_score(
+                                effective_class=effective_class,
+                                prediction_probability=raw_probability,
+                                antlr_signals=refined_decision.get("antlr_signals"),
+                            )
+                            ml_features["prediction_probability_raw"] = raw_probability
+                            ml_features["prediction_probability_displayed"] = displayed_probability
+                            ml_features["prediction_probability"] = displayed_probability
                             ml_features["prediction_binary_raw"] = predicted_label
                             ml_features["prediction_effective_class"] = effective_class
                             ml_features["prediction_effective_label"] = effective_label
+                            ml_features["prediction_effective_label_db"] = db_report.label
                             ml_features["prediction_decision_reason"] = refined_decision["decision_reason"]
                             ml_features["prediction_decision_overridden_by_antlr"] = refined_decision["decision_overridden_by_antlr"]
                             ml_features["antlr_signals"] = refined_decision["antlr_signals"]
@@ -261,6 +322,12 @@ class ReportService:
                         else:
                             # Fallback keeps pipeline alive per file when prediction fails.
                             db_report.label = 0 if benign else 1
+                            db_report.prediction_probability = None
+                            db_report.risk_score = self._compute_risk_score(
+                                effective_class="BENIGN" if benign else "MALICIOUS",
+                                prediction_probability=None,
+                                antlr_signals=None,
+                            )
                             ml_features["prediction_effective_class"] = "BENIGN" if benign else "MALICIOUS"
                             ml_features["prediction_effective_label"] = db_report.label
                             ml_features["prediction_status"] = "FAILED"
@@ -271,8 +338,18 @@ class ReportService:
                             )
                     elif benign:
                         db_report.label = 0
+                        db_report.risk_score = self._compute_risk_score(
+                            effective_class="BENIGN",
+                            prediction_probability=None,
+                            antlr_signals=None,
+                        )
                     else:
                         db_report.label = 1
+                        db_report.risk_score = self._compute_risk_score(
+                            effective_class="MALICIOUS",
+                            prediction_probability=None,
+                            antlr_signals=None,
+                        )
 
                     db_report.amount_findings = raw_report.get("amount_findings", 0)
                     db_report.antlr_report = raw_report.get("static_findings", [])  # Save findings
@@ -285,7 +362,19 @@ class ReportService:
                         )
                     )
                     db_report.analysis_date = datetime.datetime.utcnow()
-                    self.session.add(db_report)
+                    try:
+                        # Per-row savepoint avoids aborting the whole transaction if one row fails.
+                        with self.session.begin_nested():
+                            self.session.add(db_report)
+                            self.session.flush()
+                    except SQLAlchemyError as row_error:
+                        failed_hashes.add(file_hash)
+                        logger.exception(
+                            f"Row persistence failed for file '{db_report.file_name}' "
+                            f"(hash={file_hash}, language={db_report.language}). "
+                            f"Error: {row_error}"
+                        )
+                        continue
                 self.session.commit()
                 logger.info("Reports successfully saved/updated.")
 
@@ -301,6 +390,22 @@ class ReportService:
             for raw_report in raw_reports:
                 if raw_report.get("status") == "SUCCESS":
                     report_hash = generate_sha256_hash(raw_report.get("original_code", ""))
+                    if report_hash in failed_hashes:
+                        final_response.append(
+                            self._build_response_from_raw(
+                                {
+                                    "status": "DATABASE_ERROR",
+                                    "message": "This file could not be persisted due to a database row error. Check server logs for details.",
+                                    "file_path": raw_report.get("file_path", ""),
+                                    "language": raw_report.get("language", "unknown"),
+                                    "original_code": raw_report.get("original_code", ""),
+                                    "static_findings": raw_report.get("static_findings", []),
+                                    "amount_findings": raw_report.get("amount_findings", 0),
+                                },
+                                repository,
+                            )
+                        )
+                        continue
                     db_object = successful_db_reports_map.get(report_hash)
                     if db_object:
                         response_model = ReportReadWithRepository.model_validate(db_object)
@@ -324,12 +429,38 @@ class ReportService:
                             response_model.message = ("Static analysis completed and stored in the database. "
                                                       "The file is considered benign.")
                         final_response.append(response_model)
+                    else:
+                        final_response.append(
+                            self._build_response_from_raw(
+                                {
+                                    "status": "DATABASE_ERROR",
+                                    "message": "File analysis completed but no persisted report was found.",
+                                    "file_path": raw_report.get("file_path", ""),
+                                    "language": raw_report.get("language", "unknown"),
+                                    "original_code": raw_report.get("original_code", ""),
+                                    "static_findings": raw_report.get("static_findings", []),
+                                    "amount_findings": raw_report.get("amount_findings", 0),
+                                },
+                                repository,
+                            )
+                        )
                 else:
 
                     final_response.append(self._build_response_from_raw(raw_report, repository))
 
             return final_response
 
+        except IntegrityError as e:
+            logger.error(f"Integrity error in process_and_respond: {e}")
+            self.session.rollback()
+            error_response = self._build_response_from_raw(
+                {
+                    "status": "DATABASE_ERROR",
+                    "message": f"Integrity error while saving reports: {e}",
+                },
+                repository,
+            )
+            return [error_response] * len(raw_reports)
         except SQLAlchemyError as e:
             logger.error(f"Database error in process_and_respond: {e}")
             self.session.rollback()

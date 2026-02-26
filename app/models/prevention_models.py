@@ -27,6 +27,9 @@ class ReportCore(SQLModel):
     file_name: Optional[str] = Field(default=None, index=True, max_length=255)
     language: str = Field(index=True, max_length=20)
     label: Optional[int] = Field(default=None, index=True)
+    prediction_probability: Optional[float] = Field(default=None)
+    risk_score: Optional[float] = Field(default=None, index=True)
+    prediction_source: Optional[str] = Field(default=None, max_length=50)
     amount_findings: int
     antlr_report: list[dict[str, Any]] = Field(sa_column=Column(JSONB))
     antlr_features: dict[str, Any] = Field(sa_column=Column(JSONB))
