@@ -1,13 +1,13 @@
 from sqlmodel import Session, select
 from typing import List, Dict, Any
 from app.models.prevention_models import *
-# from app.services.ml_prediction import predict_malware_risk
 from app.services.codebert_processor import get_code_embedding, load_codebert_model
 from app.utilities.security_utils import generate_sha256_hash
 from collections import Counter
 from sqlalchemy.exc import SQLAlchemyError
 from pydantic import ValidationError
-from app.core.exceptions import ModelLoadingError
+from app.core.exceptions import ModelLoadingError, AnalysisError
+from app.services.prediction_refiner import refine_prediction_with_antlr
 from app.utilities.logger import logger
 import numpy as np
 import os
@@ -27,6 +27,25 @@ class ReportService:
         except Exception as e:
             logger.error(f"Critical error while loading ML models: {e}")
             raise ModelLoadingError(f"Could not load ML models: {e}")
+
+    def _predict_label_and_probability(self, raw_report: Dict[str, Any]) -> tuple[int | None, float | None, str | None]:
+        """
+        Predict label/probability from feature_vector.
+        Returns (label, probability, error_message).
+        """
+        feature_vector = raw_report.get("feature_vector", {})
+        if not isinstance(feature_vector, dict) or not feature_vector:
+            return None, None, "feature_vector missing or invalid"
+
+        try:
+            # Local import to avoid hard-failing module import at service load time.
+            from app.services.ml_prediction import predict_malware_risk
+            prediction = predict_malware_risk(feature_vector)
+            return int(prediction["prediction_binary"]), float(prediction["prediction_probability"]), None
+        except (ModelLoadingError, AnalysisError) as e:
+            return None, None, str(e)
+        except Exception as e:
+            return None, None, f"Unexpected prediction error: {e}"
 
     def _extract_ml_features(self, raw_report: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -154,7 +173,7 @@ class ReportService:
             logger.error(f"Database error while reading repository: {e}")
             return None
         
-    def process_and_respond(self, raw_reports: List[Dict[str, Any]], repository_create: RepositoryCreate, benign: bool = True, to_predict: bool = False,) -> List[ReportReadWithRepository]:
+    def process_and_respond(self, raw_reports: List[Dict[str, Any]], repository_create: RepositoryCreate, benign: bool = True, to_predict: bool = True,) -> List[ReportReadWithRepository]:
         """
         Process a list of reports: store successful ones in the DB and
         build a response list for ALL reports.
@@ -220,9 +239,36 @@ class ReportService:
                     db_report.file_name = raw_report.get("file_path", "").split(os.sep)[-1][:255]
                     db_report.source_code = raw_report.get("original_code", "")
                     db_report.language = raw_report.get("language", "unknown")
+                    ml_features = self._extract_ml_features(raw_report)
                     if to_predict:
-                        # Future ML logic
-                        pass
+                        predicted_label, prediction_probability, prediction_error = self._predict_label_and_probability(raw_report)
+                        if predicted_label is not None:
+                            refined_decision = refine_prediction_with_antlr(
+                                model_binary=predicted_label,
+                                raw_report=raw_report,
+                            )
+                            effective_class = refined_decision["effective_class"]
+                            effective_label = refined_decision["effective_label"]
+                            db_report.label = effective_label
+                            ml_features["prediction_probability"] = prediction_probability
+                            ml_features["prediction_binary_raw"] = predicted_label
+                            ml_features["prediction_effective_class"] = effective_class
+                            ml_features["prediction_effective_label"] = effective_label
+                            ml_features["prediction_decision_reason"] = refined_decision["decision_reason"]
+                            ml_features["prediction_decision_overridden_by_antlr"] = refined_decision["decision_overridden_by_antlr"]
+                            ml_features["antlr_signals"] = refined_decision["antlr_signals"]
+                            ml_features["prediction_status"] = "SUCCESS"
+                        else:
+                            # Fallback keeps pipeline alive per file when prediction fails.
+                            db_report.label = 0 if benign else 1
+                            ml_features["prediction_effective_class"] = "BENIGN" if benign else "MALICIOUS"
+                            ml_features["prediction_effective_label"] = db_report.label
+                            ml_features["prediction_status"] = "FAILED"
+                            ml_features["prediction_error"] = prediction_error
+                            logger.warning(
+                                f"Prediction failed for file '{db_report.file_name}' (hash={db_report.file_hash}). "
+                                f"Fallback label applied: {db_report.label}. Error: {prediction_error}"
+                            )
                     elif benign:
                         db_report.label = 0
                     else:
@@ -230,7 +276,7 @@ class ReportService:
 
                     db_report.amount_findings = raw_report.get("amount_findings", 0)
                     db_report.antlr_report = raw_report.get("static_findings", [])  # Save findings
-                    db_report.antlr_features = self._extract_ml_features(raw_report)
+                    db_report.antlr_features = ml_features
                     db_report.codebert_embedding = list(
                         get_code_embedding(
                             raw_report.get("original_code", ""),
@@ -258,12 +304,25 @@ class ReportService:
                     db_object = successful_db_reports_map.get(report_hash)
                     if db_object:
                         response_model = ReportReadWithRepository.model_validate(db_object)
-                        if db_object.label == 0:
-                            response_model.security_status = ("BENIGN")  # or PENDING_ML_ANALYSIS
-                            response_model.message = ("Static analysis completed and stored in the database. The file is considered benign.")
-                        else:
+                        antlr_features = db_object.antlr_features or {}
+                        prediction_status = antlr_features.get("prediction_status")
+                        effective_class = antlr_features.get("prediction_effective_class")
+                        if prediction_status == "FAILED":
+                            response_model.security_status = "UNKNOWN"
+                            response_model.message = ("Static analysis completed and stored in the database, "
+                                                      "but ML prediction failed and fallback label was applied.")
+                        elif effective_class == "MALICIOUS":
                             response_model.security_status = "MALICIOUS"
-                            response_model.message = ("Static analysis completed and stored in the database. The file is considered malicious.")
+                            response_model.message = ("Static analysis completed and stored in the database. "
+                                                      "The file is considered malicious.")
+                        elif effective_class == "SUSPICIOUS":
+                            response_model.security_status = "SUSPICIOUS"
+                            response_model.message = ("Static analysis completed and stored in the database. "
+                                                      "The file falls in the suspicious zone and requires manual review.")
+                        else:
+                            response_model.security_status = "BENIGN"
+                            response_model.message = ("Static analysis completed and stored in the database. "
+                                                      "The file is considered benign.")
                         final_response.append(response_model)
                 else:
 

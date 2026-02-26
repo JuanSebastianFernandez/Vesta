@@ -5,6 +5,7 @@ from sklearn import pipeline, linear_model, preprocessing
 from typing import Any
 from app.core.config import settings
 from app.core.exceptions import ModelLoadingError, AnalysisError
+from app.services.feature_extractor import FEATURE_NAMES_ORDER
 
 # Precharging models will be excecute one time when the application starts
 svm_model: pipeline.Pipeline | None = None
@@ -55,21 +56,6 @@ def _load_all_models() -> None:
 
 # Execute load models when module is imported
 _load_all_models()
-
-FEATURE_NAMES_ORDER = [
-    "SectionsMaxEntropy",
-    "SizeOfStackReserve",
-    "SectionsMinVirtualsize",
-    "ResourcesMinEntropy",
-    "MajorLinkerVersion",
-    "SizeOfOptionalHeader",
-    "AddressOfEntryPoint",
-    "SectionsMinEntropy",
-    "MinorOperatingSystemVersion",
-    "SectionAlignment",
-    "SizeOfHeaders",
-    "LoaderFlags"
-]
 
 def predict_malware_risk(raw_features: dict[str, float]) -> dict[str, Any]:
     """

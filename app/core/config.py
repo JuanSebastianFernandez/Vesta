@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     SERVER_WEB: str = os.getenv("SERVER_WEB", "")
 
     TRANSFORMER_MODEL_NAME: str = "microsoft/codebert-base"
+    PREDICTION_THRESHOLD_SUSPICIOUS: float = float(os.getenv("PREDICTION_THRESHOLD_SUSPICIOUS", "0.45"))
+    PREDICTION_THRESHOLD_MALICIOUS: float = float(os.getenv("PREDICTION_THRESHOLD_MALICIOUS", "0.75"))
 
     @property
     def URL_DATABASE(self) -> str:

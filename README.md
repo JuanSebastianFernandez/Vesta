@@ -48,6 +48,41 @@ uvicorn app.main:app --reload
 - `ROLE_NAME_POSTGRESQL`: rol local de PostgreSQL.
 - `PASSWORD_POSTGRESQL`: password del rol local.
 - `SERVER_WEB`: URL completa de conexión PostgreSQL cuando `AVAILABLE_SERVER=true`.
+- `PREDICTION_THRESHOLD_SUSPICIOUS`: umbral inferior para zona gris (`SUSPICIOUS`).
+- `PREDICTION_THRESHOLD_MALICIOUS`: umbral superior para marcar `MALICIOUS`.
+
+## Calibración de umbral (Issue 6.1)
+Para evitar el sesgo de “todo malicioso”, calibra el umbral con datos reales de tu entorno.
+
+Formato CSV esperado:
+- columna `y_true` con etiqueta real (`0` benigno, `1` malicioso)
+- columna `y_prob` con probabilidad predicha por el modelo
+
+Ejemplo de ejecución:
+```powershell
+python scripts/calibrate_threshold.py --input-csv data\predictions.csv --output-json calibration.json
+```
+
+El script imprime:
+- `best_threshold_malicious`
+- `recommended_threshold_suspicious`
+- matriz de confusión y métricas (precision/recall/F1/AUC)
+
+## Decisión híbrida ML + ANTLR
+La clasificación final no depende solo del modelo:
+- si ANTLR muestra señal muy baja en código grande, puede bajar un falso positivo de `MALICIOUS` a `BENIGN`.
+- si ANTLR muestra señal muy alta en código corto/denso, puede subir un falso negativo de `BENIGN` a `SUSPICIOUS`.
+
+Script para simular la decisión híbrida sobre reportes:
+```powershell
+python scripts/antlr_hybrid_decision.py --input-json data\reports.json --output-json data\hybrid_results.json
+```
+
+Formato esperado por entrada JSON:
+- `model_prediction_binary` (0/1)
+- `model_prediction_probability` (0-1)
+- `original_code`
+- `static_findings` (array ANTLR con `weight` y/o `severity`)
 
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
