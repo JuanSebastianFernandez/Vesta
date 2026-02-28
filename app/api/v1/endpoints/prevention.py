@@ -1,6 +1,7 @@
 import hmac
 import hashlib
 import json
+import datetime
 from fastapi import APIRouter, HTTPException, status, Request, Header, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 from typing import Any, Annotated
@@ -20,6 +21,82 @@ router = APIRouter(
 
 SessionDep = Annotated[Session, Depends(get_session)]
 repo_manager = RepositoryManager()
+
+
+def _normalize_repo_name(repo_url: str) -> str:
+    return repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+
+
+def _extract_security_status(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("security_status", "UNKNOWN"))
+    return str(getattr(item, "security_status", "UNKNOWN"))
+
+
+def _summarize_analysis_results(results: list[Any]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {
+        "BENIGN": 0,
+        "SUSPICIOUS": 0,
+        "MALICIOUS": 0,
+        "SKIPPED": 0,
+        "ANALYSIS_ERROR": 0,
+        "POTENTIALLY_MALFORMED": 0,
+        "UNKNOWN": 0,
+    }
+    for item in results:
+        status_value = _extract_security_status(item).upper()
+        if status_value in status_counts:
+            status_counts[status_value] += 1
+        else:
+            status_counts["UNKNOWN"] += 1
+    return {
+        "total_reports": len(results),
+        "status_counts": status_counts,
+    }
+
+
+def _run_analysis_job_background(job_id: str) -> None:
+    with Session(engine) as bg_session:
+        job = bg_session.get(AnalysisJob, job_id)
+        if not job:
+            logger.error(f"[Job runner] AnalysisJob '{job_id}' not found.")
+            return
+
+        try:
+            job.status = "RUNNING"
+            job.started_at = datetime.datetime.utcnow()
+            bg_session.add(job)
+            bg_session.commit()
+            bg_session.refresh(job)
+
+            raw_reports = repo_manager.process_repository(
+                repo_url=job.repository_url,
+                repo_name=job.repository_name,
+                commit_hash=job.commit_hash,
+            )
+            report_service = ReportService(session=bg_session)
+            response_reports = report_service.process_and_respond(
+                raw_reports=raw_reports,
+                repository_create=RepositoryCreate(url=job.repository_url, commit_hash=job.commit_hash),
+            )
+
+            job.status = "DONE"
+            job.finished_at = datetime.datetime.utcnow()
+            job.error_message = None
+            job.result_summary = _summarize_analysis_results(response_reports)
+            bg_session.add(job)
+            bg_session.commit()
+            logger.info(f"[Job runner] AnalysisJob '{job_id}' completed.")
+        except Exception as e:
+            bg_session.rollback()
+            job = bg_session.get(AnalysisJob, job_id)
+            if job:
+                job.status = "FAILED"
+                job.finished_at = datetime.datetime.utcnow()
+                job.error_message = str(e)[:4000]
+                bg_session.add(job)
+                bg_session.commit()
+            logger.exception(f"[Job runner] AnalysisJob '{job_id}' failed: {e}")
 
 
 
@@ -76,6 +153,48 @@ async def analyze_repository_manual(request_data: RepositoryCreate, session: Ses
 async def analyze_repository_manual_legacy(request_data: RepositoryCreate, session: SessionDep):
     logger.warning("Deprecated endpoint '/prevention/analayze-repository' used. Use '/prevention/analyze-repository' instead.")
     return await _analyze_repository_impl(request_data=request_data, session=session)
+
+@router.post(
+    "/analyze-repository-async",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Create async analysis job and return job id immediately",
+)
+async def analyze_repository_async(
+    request_data: RepositoryCreate,
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+) -> dict[str, Any]:
+    repo_url = str(request_data.url)
+    job = AnalysisJob(
+        repository_url=repo_url,
+        repository_name=_normalize_repo_name(repo_url),
+        commit_hash=request_data.commit_hash,
+        trigger_source="MANUAL",
+        status="PENDING",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
+    background_tasks.add_task(_run_analysis_job_background, job.id)
+    return {
+        "message": "Analysis job created and scheduled.",
+        "job_id": job.id,
+        "status": job.status,
+    }
+
+
+@router.get(
+    "/jobs/{job_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Get status of an async analysis job",
+    response_model=AnalysisJobRead,
+)
+async def get_analysis_job(job_id: str, session: SessionDep):
+    job = session.get(AnalysisJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+    return job
 
 
 def _process_github_push_background(repo_url: str, repo_name: str, head_commit_id: str, delivery_id: str) -> None:

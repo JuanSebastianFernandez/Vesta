@@ -1,4 +1,5 @@
 import datetime
+import uuid
 from typing import Any, Optional
 from sqlmodel import SQLModel, Field, Column, Relationship, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -57,4 +58,31 @@ class ReportReadWithRepository(ReportRead):
 
 class RepositoryReadWithReports(RepositoryRead):
     reports: list[ReportRead] = []
+
+
+# --------------- Analysis Job Models ---------------------
+class AnalysisJobBase(SQLModel):
+    repository_url: str = Field(index=True, max_length=1024)
+    repository_name: str = Field(index=True, max_length=255)
+    commit_hash: Optional[str] = Field(default="main", max_length=128)
+    trigger_source: str = Field(default="MANUAL", max_length=20)
+    status: str = Field(default="PENDING", index=True, max_length=20)
+    error_message: Optional[str] = Field(default=None, max_length=4000)
+    result_summary: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
+    created_at: datetime.datetime = Field(default_factory=datetime.datetime.utcnow, nullable=False, index=True)
+    started_at: Optional[datetime.datetime] = Field(default=None)
+    finished_at: Optional[datetime.datetime] = Field(default=None)
+
+
+class AnalysisJob(AnalysisJobBase, table=True):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True, max_length=36)
+
+
+class AnalysisJobCreate(SQLModel):
+    url: str
+    commit_hash: Optional[str] = "main"
+
+
+class AnalysisJobRead(AnalysisJobBase):
+    id: str
 
