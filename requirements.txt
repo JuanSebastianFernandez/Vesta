@@ -16,5 +16,6 @@ scikit-learn==1.4.*
 tensorflow==2.18.1
 torch==2.8.0
 transformers==4.56.1
+docker==7.1.0
 
 coloredlogs==15.0.1

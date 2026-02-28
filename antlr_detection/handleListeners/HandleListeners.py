@@ -296,6 +296,11 @@ class AntlrListenerHandler:
                 if file_name in self.DEFAULT_IGNORED_FILE_PATTERNS:
                     continue # Skip file
 
+                # Skip files whose extension is not supported by ANTLR listeners.
+                file_extension = os.path.splitext(file_name)[1].lower()
+                if file_extension not in LANGUAGE_CONFIGS_MAP:
+                    continue
+
                 file_path = os.path.join(root, file_name)
                 report = self.analyze_file(file_path)
                 reports.append(report)

@@ -50,6 +50,16 @@ uvicorn app.main:app --reload
 - `SERVER_WEB`: URL completa de conexión PostgreSQL cuando `AVAILABLE_SERVER=true`.
 - `PREDICTION_THRESHOLD_SUSPICIOUS`: umbral inferior para zona gris (`SUSPICIOUS`).
 - `PREDICTION_THRESHOLD_MALICIOUS`: umbral superior para marcar `MALICIOUS`.
+- `DAST_ENABLED`: activa/desactiva análisis dinámico en Docker.
+- `DAST_DOCKER_IMAGE`: imagen usada para sandbox DAST.
+- `DAST_TIMEOUT_SECONDS`: timeout máximo del contenedor DAST.
+- `DAST_MEMORY_LIMIT`: límite de memoria del contenedor (ej. `256m`).
+- `DAST_PIDS_LIMIT`: límite de procesos del contenedor.
+- `DAST_CPU_QUOTA`: cuota de CPU del contenedor (sobre periodo 100000).
+- `DAST_NETWORK_MODE`: modo de red de Docker para DAST (`none`, `bridge`, etc.).
+- `DAST_TSHARK_ENABLED`: activa captura de tráfico de red con `tshark`.
+- `DAST_TSHARK_PATH`: binario/ruta de `tshark`.
+- `DAST_TSHARK_INTERFACE`: interfaz a capturar (ej. `any`).
 
 ## Calibración de umbral (Issue 6.1)
 Para evitar el sesgo de “todo malicioso”, calibra el umbral con datos reales de tu entorno.
@@ -87,3 +97,5 @@ Formato esperado por entrada JSON:
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
 - Los repositorios clonados se almacenan en `~/vesta_cloned_repos`.
+- DAST se ejecuta en contenedor restringido (`cap_drop=ALL`, `no-new-privileges`) y el modo de red se controla con `DAST_NETWORK_MODE`.
+- Para captura de red, `tshark` debe estar instalado en el host (en Windows normalmente con Npcap) y con permisos para capturar en la interfaz configurada.

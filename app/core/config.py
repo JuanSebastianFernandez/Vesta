@@ -2,6 +2,10 @@ import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
+
+def _env_bool(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
 class Settings(BaseSettings):
     """
     VESTA App Conguration, charging from enviorenment variables.
@@ -40,7 +44,7 @@ class Settings(BaseSettings):
     # Set GitHub/GitLab Webhooks (samples for testing purposes)
     GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "secretgithubkey")
     GITLAB_WEBHOOK_SECRET: str = os.getenv("GITLAB_WEBHOOK_SECRET", "secretgitlabkey")
-    AVAILABLE_SERVER: bool = bool(os.getenv("AVAILABLE_SERVER", "false"))
+    AVAILABLE_SERVER: bool = _env_bool("AVAILABLE_SERVER", "false")
     PASSWORD_POSTGRESQL: str = os.getenv("PASSWORD_POSTGRESQL", "vesta_password")
     ROLE_NAME_POSTGRESQL: str = os.getenv("ROLE_NAME_POSTGRESQL", "vesta_role")
     SERVER_WEB: str = os.getenv("SERVER_WEB", "")
@@ -48,6 +52,16 @@ class Settings(BaseSettings):
     TRANSFORMER_MODEL_NAME: str = "microsoft/codebert-base"
     PREDICTION_THRESHOLD_SUSPICIOUS: float = float(os.getenv("PREDICTION_THRESHOLD_SUSPICIOUS", "0.45"))
     PREDICTION_THRESHOLD_MALICIOUS: float = float(os.getenv("PREDICTION_THRESHOLD_MALICIOUS", "0.75"))
+    DAST_ENABLED: bool = _env_bool("DAST_ENABLED", "true")
+    DAST_DOCKER_IMAGE: str = os.getenv("DAST_DOCKER_IMAGE", "python:3.12-alpine")
+    DAST_TIMEOUT_SECONDS: int = int(os.getenv("DAST_TIMEOUT_SECONDS", "45"))
+    DAST_MEMORY_LIMIT: str = os.getenv("DAST_MEMORY_LIMIT", "256m")
+    DAST_PIDS_LIMIT: int = int(os.getenv("DAST_PIDS_LIMIT", "128"))
+    DAST_CPU_QUOTA: int = int(os.getenv("DAST_CPU_QUOTA", "50000"))
+    DAST_NETWORK_MODE: str = os.getenv("DAST_NETWORK_MODE", "none")
+    DAST_TSHARK_ENABLED: bool = _env_bool("DAST_TSHARK_ENABLED", "false")
+    DAST_TSHARK_PATH: str = os.getenv("DAST_TSHARK_PATH", "tshark")
+    DAST_TSHARK_INTERFACE: str = os.getenv("DAST_TSHARK_INTERFACE", "any")
 
     @property
     def URL_DATABASE(self) -> str:

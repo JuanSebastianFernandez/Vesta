@@ -47,6 +47,30 @@ class ReportService:
         except Exception as e:
             return None, None, f"Unexpected prediction error: {e}"
 
+    def _is_empty_source(self, raw_report: Dict[str, Any]) -> bool:
+        source = raw_report.get("original_code", "")
+        if source is None:
+            return True
+        if not isinstance(source, str):
+            source = str(source)
+        return source.strip() in {"", "utf-8"}
+
+    def _build_report_hash(self, raw_report: Dict[str, Any], repository: Any) -> str:
+        """
+        Build a stable hash per repository+commit+path+content to avoid collisions
+        between files that share the same content (e.g., empty files).
+        """
+        repo_url = str(getattr(repository, "url", "") or "")
+        repo_commit = str(getattr(repository, "commit_hash", "") or "")
+        file_path = str(raw_report.get("file_path", "") or "")
+        original_code = raw_report.get("original_code", "")
+        if original_code is None:
+            original_code = ""
+        if not isinstance(original_code, str):
+            original_code = str(original_code)
+        material = f"{repo_url}|{repo_commit}|{file_path}|{original_code}"
+        return generate_sha256_hash(material)
+
     def _compute_risk_score(
         self,
         effective_class: str,
@@ -139,11 +163,11 @@ class ReportService:
         try:
             status = raw_report.get("status", "ANALYSIS_FAILED")
             message = raw_report.get("message", "Unknown error during analysis.")
-            security_status = "UNKNOWN"
+            security_status = "ANALYSIS_ERROR"
 
             if status == "PARSING_ERRORS":
                 security_status = "POTENTIALLY_MALFORMED"
-            elif status == "UNSUPPORTED_LANGUAGE":
+            elif status in {"UNSUPPORTED_LANGUAGE", "EMPTY_SOURCE"}:
                 security_status = "SKIPPED"
             elif status == "ANALYSIS_FAILED":
                 security_status = "ANALYSIS_ERROR"
@@ -151,7 +175,7 @@ class ReportService:
             findings_list = raw_report.get("static_findings", [])
 
             return ReportReadWithRepository(
-                file_hash=generate_sha256_hash(raw_report.get("original_code", "")),
+                file_hash=self._build_report_hash(raw_report, repository),
                 file_name=raw_report.get("file_path", "").split(os.sep)[-1][:255],
                 language=raw_report.get("language", "unknown"),
                 label=None,  # No label for failed reports
@@ -262,10 +286,10 @@ class ReportService:
             return [error_response] * len(raw_reports)
 
 
-        successful_raw_reports = [r for r in raw_reports if r.get("status") == "SUCCESS" and r.get("original_code") not in ["", None, " ", "utf-8"]]
+        successful_raw_reports = [r for r in raw_reports if r.get("status") == "SUCCESS" and not self._is_empty_source(r)]
         try:
             if successful_raw_reports:
-                hashes = [generate_sha256_hash(r.get("original_code", "")) for r in successful_raw_reports]
+                hashes = [self._build_report_hash(r, repository) for r in successful_raw_reports]
                 existing_reports_map = {r.file_hash: r for r in self._read_reports_from_db(hashes)}
                 pending_reports_map = dict(existing_reports_map)
                 failed_hashes: set[str] = set()
@@ -381,7 +405,7 @@ class ReportService:
             # --- Response building for ALL reports ---
             final_response: List[ReportReadWithRepository] = []
 
-            all_successful_hashes = [generate_sha256_hash(r.get("original_code", "")) for r in successful_raw_reports]
+            all_successful_hashes = [self._build_report_hash(r, repository) for r in successful_raw_reports]
             if all_successful_hashes:
                 successful_db_reports_map = {r.file_hash: r for r in self._read_reports_from_db(all_successful_hashes)}
             else:
@@ -389,7 +413,24 @@ class ReportService:
 
             for raw_report in raw_reports:
                 if raw_report.get("status") == "SUCCESS":
-                    report_hash = generate_sha256_hash(raw_report.get("original_code", ""))
+                    if self._is_empty_source(raw_report):
+                        final_response.append(
+                            self._build_response_from_raw(
+                                {
+                                    "status": "EMPTY_SOURCE",
+                                    "message": "File skipped because source code is empty.",
+                                    "file_path": raw_report.get("file_path", ""),
+                                    "language": raw_report.get("language", "unknown"),
+                                    "original_code": raw_report.get("original_code", ""),
+                                    "static_findings": raw_report.get("static_findings", []),
+                                    "amount_findings": raw_report.get("amount_findings", 0),
+                                },
+                                repository,
+                            )
+                        )
+                        continue
+
+                    report_hash = self._build_report_hash(raw_report, repository)
                     if report_hash in failed_hashes:
                         final_response.append(
                             self._build_response_from_raw(
@@ -413,9 +454,10 @@ class ReportService:
                         prediction_status = antlr_features.get("prediction_status")
                         effective_class = antlr_features.get("prediction_effective_class")
                         if prediction_status == "FAILED":
-                            response_model.security_status = "UNKNOWN"
+                            response_model.security_status = "SUSPICIOUS"
                             response_model.message = ("Static analysis completed and stored in the database, "
-                                                      "but ML prediction failed and fallback label was applied.")
+                                                      "but ML prediction failed and fallback label was applied. "
+                                                      "Manual review is recommended.")
                         elif effective_class == "MALICIOUS":
                             response_model.security_status = "MALICIOUS"
                             response_model.message = ("Static analysis completed and stored in the database. "

@@ -26,6 +26,10 @@ class RepositoryManager:
         """Build the local path for cloned repositories."""
         return self.cloned_repos_base_dir / repo_name
 
+    def get_repo_path(self, repo_name: str) -> Path:
+        """Public accessor for local repository path."""
+        return self._get_repo_path(repo_name)
+
     def _clone_repository(self, repo_url: str, repo_name: str, commit_hash: str|None = None) -> Path:
         """
         Clone a Git repository in the working directory.

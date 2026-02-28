@@ -9,6 +9,7 @@ from app.models.prevention_models import *
 from app.core.exceptions import RepositoryError, AnalysisError, ModelLoadingError
 from app.services.repository_manager import RepositoryManager
 from app.services.report_service import ReportService
+from app.services.dynamic_analysis_service import DynamicAnalysisService
 from app.core.config import settings
 from db.database import get_session, engine
 from app.utilities.logger import logger
@@ -21,6 +22,7 @@ router = APIRouter(
 
 SessionDep = Annotated[Session, Depends(get_session)]
 repo_manager = RepositoryManager()
+dynamic_analysis_service = DynamicAnalysisService()
 
 
 def _normalize_repo_name(repo_url: str) -> str:
@@ -113,12 +115,15 @@ def _run_analysis_job_background(job_id: str) -> None:
                 raw_reports=raw_reports,
                 repository_create=RepositoryCreate(url=job.repository_url, commit_hash=job.commit_hash),
             )
+            repo_path = repo_manager.get_repo_path(job.repository_name)
+            dast_result = dynamic_analysis_service.analyze_repository(repo_path)
 
             job.status = "DONE"
             job.finished_at = datetime.datetime.utcnow()
             job.error_message = None
             job.result_summary = {
                 "summary": _summarize_analysis_results(response_reports),
+                "dast": dast_result,
                 "reports": [_compact_report_result(item) for item in response_reports],
             }
             bg_session.add(job)
@@ -288,9 +293,12 @@ def _process_github_push_background(repo_url: str, repo_name: str, head_commit_i
                 raw_reports=raw_reports,
                 repository_create=RepositoryCreate(url=repo_url, commit_hash=head_commit_id),
             )
+        repo_path = repo_manager.get_repo_path(repo_name)
+        dast_result = dynamic_analysis_service.analyze_repository(repo_path)
         logger.info(
             f"[GitHub webhook background] done delivery={delivery_id} "
-            f"reports_total={len(response_reports)}"
+            f"reports_total={len(response_reports)} "
+            f"dast_status={dast_result.get('status')}"
         )
     except Exception as e:
         logger.exception(f"[GitHub webhook background] failed delivery={delivery_id}: {e}")
