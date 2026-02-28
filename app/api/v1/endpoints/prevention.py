@@ -54,6 +54,40 @@ def _summarize_analysis_results(results: list[Any]) -> dict[str, Any]:
         "status_counts": status_counts,
     }
 
+def _compact_report_result(item: Any) -> dict[str, Any]:
+    if isinstance(item, dict):
+        repository_obj = item.get("repository") or {}
+        return {
+            "file_hash": item.get("file_hash"),
+            "file_name": item.get("file_name"),
+            "language": item.get("language"),
+            "label": item.get("label"),
+            "prediction_probability": item.get("prediction_probability"),
+            "risk_score": item.get("risk_score"),
+            "prediction_source": item.get("prediction_source"),
+            "amount_findings": item.get("amount_findings"),
+            "security_status": item.get("security_status"),
+            "message": item.get("message"),
+            "repository_id": repository_obj.get("id"),
+            "repository_url": repository_obj.get("url"),
+        }
+
+    repository_obj = getattr(item, "repository", None)
+    return {
+        "file_hash": getattr(item, "file_hash", None),
+        "file_name": getattr(item, "file_name", None),
+        "language": getattr(item, "language", None),
+        "label": getattr(item, "label", None),
+        "prediction_probability": getattr(item, "prediction_probability", None),
+        "risk_score": getattr(item, "risk_score", None),
+        "prediction_source": getattr(item, "prediction_source", None),
+        "amount_findings": getattr(item, "amount_findings", None),
+        "security_status": getattr(item, "security_status", None),
+        "message": getattr(item, "message", None),
+        "repository_id": getattr(repository_obj, "id", None) if repository_obj else None,
+        "repository_url": getattr(repository_obj, "url", None) if repository_obj else None,
+    }
+
 
 def _run_analysis_job_background(job_id: str) -> None:
     with Session(engine) as bg_session:
@@ -83,7 +117,10 @@ def _run_analysis_job_background(job_id: str) -> None:
             job.status = "DONE"
             job.finished_at = datetime.datetime.utcnow()
             job.error_message = None
-            job.result_summary = _summarize_analysis_results(response_reports)
+            job.result_summary = {
+                "summary": _summarize_analysis_results(response_reports),
+                "reports": [_compact_report_result(item) for item in response_reports],
+            }
             bg_session.add(job)
             bg_session.commit()
             logger.info(f"[Job runner] AnalysisJob '{job_id}' completed.")
@@ -195,6 +232,41 @@ async def get_analysis_job(job_id: str, session: SessionDep):
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
     return job
+
+
+@router.get(
+    "/jobs/{job_id}/result",
+    status_code=status.HTTP_200_OK,
+    summary="Get final result payload for an async analysis job",
+)
+async def get_analysis_job_result(job_id: str, session: SessionDep):
+    job = session.get(AnalysisJob, job_id)
+    if not job:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job '{job_id}' not found.")
+
+    if job.status in {"PENDING", "RUNNING"}:
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "message": f"Job '{job_id}' is not finished yet.",
+                "job_id": job_id,
+                "status": job.status,
+            },
+        )
+
+    if job.status == "FAILED":
+        return {
+            "job_id": job_id,
+            "status": job.status,
+            "error_message": job.error_message,
+            "result": job.result_summary or {},
+        }
+
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "result": job.result_summary or {},
+    }
 
 
 def _process_github_push_background(repo_url: str, repo_name: str, head_commit_id: str, delivery_id: str) -> None:
