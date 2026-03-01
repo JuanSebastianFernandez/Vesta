@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import json
 import datetime
-from fastapi import APIRouter, HTTPException, status, Request, Header, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, Request, Header, Depends, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
 from typing import Any, Annotated
 from app.models.prevention_models import *
@@ -12,10 +12,12 @@ from app.services.report_service import ReportService
 from app.services.dynamic_analysis_service import DynamicAnalysisService
 from app.services.risk_scoring_service import RiskScoringService
 from app.services.dashboard_contract_service import DashboardContractService
+from app.services.antlr_report_validator import AntlrReportValidator
 from app.core.config import settings
 from db.database import get_session, engine
 from app.utilities.logger import logger
-from sqlmodel import Session
+from sqlmodel import Session, select
+from sqlalchemy import desc
 
 router = APIRouter(
     prefix="/prevention",
@@ -27,6 +29,7 @@ repo_manager = RepositoryManager()
 dynamic_analysis_service = DynamicAnalysisService()
 risk_scoring_service = RiskScoringService()
 dashboard_contract_service = DashboardContractService()
+antlr_report_validator = AntlrReportValidator()
 
 
 def _normalize_repo_name(repo_url: str) -> str:
@@ -93,6 +96,63 @@ def _compact_report_result(item: Any) -> dict[str, Any]:
         "repository_id": getattr(repository_obj, "id", None) if repository_obj else None,
         "repository_url": getattr(repository_obj, "url", None) if repository_obj else None,
     }
+
+
+def _derive_security_status_from_db(report: Report) -> str:
+    antlr_features = report.antlr_features or {}
+    prediction_status = antlr_features.get("prediction_status")
+    effective_class = antlr_features.get("prediction_effective_class")
+
+    if prediction_status == "FAILED":
+        return "SUSPICIOUS"
+    if isinstance(effective_class, str) and effective_class.upper() in {"BENIGN", "SUSPICIOUS", "MALICIOUS"}:
+        return effective_class.upper()
+    if report.label == 1:
+        return "MALICIOUS"
+    if report.label == 0:
+        return "BENIGN"
+    return "UNKNOWN"
+
+
+def _build_historical_report_payload(
+    report: Report,
+    include_antlr_report: bool,
+    include_antlr_features: bool,
+    include_source_code: bool,
+    include_antlr_validation: bool,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "report_id": report.id,
+        "analysis_date": report.analysis_date.isoformat() + "Z" if report.analysis_date else None,
+        "repository_id": report.repository_id,
+        "file_hash": report.file_hash,
+        "file_name": report.file_name,
+        "language": report.language,
+        "label": report.label,
+        "prediction_probability": report.prediction_probability,
+        "risk_score": report.risk_score,
+        "prediction_source": report.prediction_source,
+        "amount_findings": report.amount_findings,
+        "security_status": _derive_security_status_from_db(report),
+    }
+
+    antlr_report = report.antlr_report or []
+    antlr_features = report.antlr_features or {}
+
+    if include_antlr_report:
+        payload["antlr_report"] = antlr_report
+    if include_antlr_features:
+        payload["antlr_features"] = antlr_features
+    if include_source_code:
+        payload["source_code"] = report.source_code
+    if include_antlr_validation:
+        payload["antlr_validation"] = antlr_report_validator.validate(
+            antlr_report=antlr_report,
+            amount_findings=report.amount_findings,
+            antlr_features=antlr_features,
+        )
+
+    return payload
 
 
 def _run_analysis_job_background(job_id: str) -> None:
@@ -282,6 +342,132 @@ async def get_analysis_job_result(job_id: str, session: SessionDep):
         "job_id": job_id,
         "status": job.status,
         "result": job.result_summary or {},
+    }
+
+
+@router.get(
+    "/reports/{repository_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Get historical reports by repository with pagination and basic filters",
+)
+async def get_historical_reports_by_repository(
+    repository_id: int,
+    session: SessionDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    language: str | None = Query(default=None),
+    security_status: str | None = Query(default=None),
+    include_antlr_report: bool = Query(default=False),
+    include_antlr_features: bool = Query(default=False),
+    include_antlr_validation: bool = Query(default=False),
+    include_source_code: bool = Query(default=False),
+) -> dict[str, Any]:
+    repository = session.get(Repository, repository_id)
+    if not repository:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Repository '{repository_id}' not found.")
+
+    statement = select(Report).where(Report.repository_id == repository_id).order_by(desc(Report.analysis_date))
+    if language:
+        statement = statement.where(Report.language == language)
+
+    all_reports = list(session.exec(statement).all())
+    if security_status:
+        normalized = security_status.upper().strip()
+        all_reports = [r for r in all_reports if _derive_security_status_from_db(r) == normalized]
+
+    total_reports = len(all_reports)
+    offset = (page - 1) * page_size
+    paged_reports = all_reports[offset:offset + page_size]
+
+    items = [
+        _build_historical_report_payload(
+            report=r,
+            include_antlr_report=include_antlr_report,
+            include_antlr_features=include_antlr_features,
+            include_source_code=include_source_code,
+            include_antlr_validation=include_antlr_validation,
+        )
+        for r in paged_reports
+    ]
+
+    return {
+        "repository": {
+            "id": repository.id,
+            "url": repository.url,
+            "commit_hash": repository.commit_hash,
+        },
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_reports": total_reports,
+            "total_pages": (total_reports + page_size - 1) // page_size if total_reports > 0 else 0,
+        },
+        "filters": {
+            "language": language,
+            "security_status": security_status.upper() if security_status else None,
+        },
+        "items": items,
+    }
+
+
+@router.get(
+    "/reports/{repository_id}/antlr-validation",
+    status_code=status.HTTP_200_OK,
+    summary="Validate stored ANTLR findings for a repository and return per-file component diagnostics",
+)
+async def validate_repository_antlr_reports(
+    repository_id: int,
+    session: SessionDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+) -> dict[str, Any]:
+    repository = session.get(Repository, repository_id)
+    if not repository:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Repository '{repository_id}' not found.")
+
+    statement = select(Report).where(Report.repository_id == repository_id).order_by(desc(Report.analysis_date))
+    reports = list(session.exec(statement).all())
+
+    validations = [
+        {
+            "report_id": r.id,
+            "file_name": r.file_name,
+            "file_hash": r.file_hash,
+            "analysis_date": r.analysis_date.isoformat() + "Z" if r.analysis_date else None,
+            "validation": antlr_report_validator.validate(
+                antlr_report=r.antlr_report or [],
+                amount_findings=r.amount_findings,
+                antlr_features=r.antlr_features or {},
+            ),
+        }
+        for r in reports
+    ]
+
+    total_reports = len(validations)
+    offset = (page - 1) * page_size
+    paged = validations[offset:offset + page_size]
+
+    valid_reports = sum(1 for v in validations if v["validation"]["is_valid"])
+    invalid_reports = total_reports - valid_reports
+
+    return {
+        "repository": {
+            "id": repository.id,
+            "url": repository.url,
+            "commit_hash": repository.commit_hash,
+        },
+        "summary": {
+            "total_reports": total_reports,
+            "valid_reports": valid_reports,
+            "invalid_reports": invalid_reports,
+        },
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_reports": total_reports,
+            "total_pages": (total_reports + page_size - 1) // page_size if total_reports > 0 else 0,
+        },
+        "items": paged,
     }
 
 

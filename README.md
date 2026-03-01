@@ -144,6 +144,30 @@ Ejemplo resumido:
 }
 ```
 
+## Histórico y Validación ANTLR (Issue 15)
+Se agregaron endpoints para consultar histórico por repositorio y validar la consistencia de `antlr_report`.
+
+### 1) Histórico paginado por repositorio
+`GET /prevention/reports/{repository_id}`
+
+Query params:
+- `page` (default `1`)
+- `page_size` (default `20`, max `200`)
+- `language` (opcional)
+- `security_status` (opcional: `BENIGN|SUSPICIOUS|MALICIOUS|UNKNOWN`)
+- `include_antlr_report` (`true|false`)
+- `include_antlr_features` (`true|false`)
+- `include_antlr_validation` (`true|false`)
+- `include_source_code` (`true|false`)
+
+### 2) Validación ANTLR por repositorio
+`GET /prevention/reports/{repository_id}/antlr-validation`
+
+Retorna:
+- resumen global (`valid_reports`, `invalid_reports`)
+- detalle por archivo
+- validación por componente/hallazgo (`components`) con `issues` por finding
+
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
 - Los repositorios clonados se almacenan en `~/vesta_cloned_repos`.
