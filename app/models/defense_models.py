@@ -8,6 +8,7 @@ from sqlmodel import SQLModel, Field, Column, Text
 class DefenseLogEventBase(SQLModel):
     repository_id: Optional[int] = Field(default=None, index=True, foreign_key="repository.id")
     source_system: str = Field(index=True, max_length=120)
+    event_external_id: Optional[str] = Field(default=None, index=True, max_length=255)
     source_ip: Optional[str] = Field(default=None, index=True, max_length=64)
     host_id: Optional[str] = Field(default=None, index=True, max_length=255)
     user_id: Optional[str] = Field(default=None, index=True, max_length=255)
@@ -116,3 +117,30 @@ class DefenseIngestResponse(SQLModel):
     triggered_alerts: list[ThreatAlertRead] = Field(default_factory=list)
     analyzed_rules: int = 0
     action_recommended: str = "NONE"
+    duplicate_event: bool = False
+    duplicate_of_event_id: Optional[int] = None
+
+
+class DefenseReanalyzeRequest(SQLModel):
+    repository_id: Optional[int] = None
+    source_system: Optional[str] = None
+    date_from: Optional[datetime.datetime] = None
+    date_to: Optional[datetime.datetime] = None
+    event_limit: int = Field(default=5000, ge=1, le=50000)
+    close_existing_open_alerts: bool = True
+    run_ttl_autoclose_before_reanalyze: bool = True
+
+
+class DefenseReanalyzeResponse(SQLModel):
+    events_scanned: int = 0
+    events_reanalyzed: int = 0
+    rules_evaluated: int = 0
+    alerts_triggered_or_updated: int = 0
+    alerts_closed_before_reanalyze: int = 0
+    alerts_auto_closed_by_ttl: int = 0
+
+
+class DefenseAutoCloseResponse(SQLModel):
+    ttl_minutes: int
+    include_critical: bool
+    closed_alerts: int

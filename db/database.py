@@ -67,6 +67,7 @@ def _run_schema_patches():
                     id SERIAL PRIMARY KEY,
                     repository_id INTEGER NULL REFERENCES repository(id),
                     source_system VARCHAR(120) NOT NULL,
+                    event_external_id VARCHAR(255) NULL,
                     source_ip VARCHAR(64) NULL,
                     host_id VARCHAR(255) NULL,
                     user_id VARCHAR(255) NULL,
@@ -78,6 +79,14 @@ def _run_schema_patches():
                     raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                     ingested_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT NOW()
                 );
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                ALTER TABLE defense_log_event
+                    ADD COLUMN IF NOT EXISTS event_external_id VARCHAR(255);
                 """
             )
         )
@@ -112,6 +121,30 @@ def _run_schema_patches():
         )
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_defense_log_event_source_system ON defense_log_event (source_system);")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_defense_log_event_event_external_id ON defense_log_event (event_external_id);")
+        )
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM defense_log_event
+                        WHERE event_external_id IS NOT NULL
+                        GROUP BY source_system, event_external_id
+                        HAVING COUNT(*) > 1
+                    ) THEN
+                        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS uq_defense_log_event_source_system_external_id
+                                 ON defense_log_event (source_system, event_external_id)
+                                 WHERE event_external_id IS NOT NULL';
+                    END IF;
+                END
+                $$;
+                """
+            )
         )
         conn.execute(
             text("CREATE INDEX IF NOT EXISTS ix_defense_log_event_source_ip ON defense_log_event (source_ip);")

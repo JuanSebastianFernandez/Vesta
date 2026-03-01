@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     DAST_TSHARK_ENABLED: bool = _env_bool("DAST_TSHARK_ENABLED", "false")
     DAST_TSHARK_PATH: str = os.getenv("DAST_TSHARK_PATH", "tshark")
     DAST_TSHARK_INTERFACE: str = os.getenv("DAST_TSHARK_INTERFACE", "any")
+    DEFENSE_AUTO_CLOSE_STALE_ALERTS: bool = _env_bool("DEFENSE_AUTO_CLOSE_STALE_ALERTS", "true")
+    DEFENSE_ALERT_TTL_MINUTES: int = int(os.getenv("DEFENSE_ALERT_TTL_MINUTES", "180"))
+    DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL: bool = _env_bool("DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL", "false")
 
     @property
     def URL_DATABASE(self) -> str:

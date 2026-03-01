@@ -60,6 +60,9 @@ uvicorn app.main:app --reload
 - `DAST_TSHARK_ENABLED`: activa captura de tráfico de red con `tshark`.
 - `DAST_TSHARK_PATH`: binario/ruta de `tshark`.
 - `DAST_TSHARK_INTERFACE`: interfaz a capturar (ej. `any`).
+- `DEFENSE_AUTO_CLOSE_STALE_ALERTS`: activa autocierre TTL de alertas `OPEN` en módulo defensa.
+- `DEFENSE_ALERT_TTL_MINUTES`: minutos de inactividad para autocierre.
+- `DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL`: incluye `CRITICAL` en autocierre TTL.
 
 ## Calibración de umbral (Issue 6.1)
 Para evitar el sesgo de “todo malicioso”, calibra el umbral con datos reales de tu entorno.
@@ -179,6 +182,7 @@ Tablas nuevas:
 Endpoints principales:
 - `POST /defense/events`: ingesta 1 evento y evaluación contextual.
 - `POST /defense/events/batch`: ingesta por lote.
+- `POST /defense/events/reanalyze`: recalcula alertas históricas tras ajuste de reglas.
 - `GET /defense/events`: consulta eventos con filtros y paginación.
 - `POST /defense/rules/seed`: siembra/sincroniza reglas por defecto.
 - `GET /defense/rules`: lista reglas activas.
@@ -186,6 +190,7 @@ Endpoints principales:
 - `GET /defense/alerts`: lista alertas con filtros y paginación.
 - `GET /defense/alerts/{alert_id}`: detalle de alerta.
 - `PATCH /defense/alerts/{alert_id}/status`: transición `OPEN|ACKNOWLEDGED|RESOLVED`.
+- `POST /defense/alerts/auto-close`: cierre automático manual por TTL.
 
 Reglas iniciales (MVP):
 - `BRUTE_FORCE_AUTH`
@@ -215,6 +220,11 @@ Ejemplo de ingesta:
   "raw_payload": {"vendor": "edr-x", "event_id": "evt-123"}
 }
 ```
+
+Mejoras Issue 16.1:
+- Deduplicación por `raw_payload.event_id` (o `event_external_id`) para ignorar eventos repetidos SIEM/EDR.
+- Reanálisis histórico por ventana/repositorio/fuente para recalcular alertas luego de cambios en reglas.
+- Cierre automático de alertas `OPEN` inactivas (TTL configurable) para reducir fatiga operativa.
 
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.

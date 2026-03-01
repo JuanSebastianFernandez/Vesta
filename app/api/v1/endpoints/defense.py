@@ -5,11 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlmodel import Session, select
 from sqlalchemy import desc, func
 
+from app.core.config import settings
 from app.models.defense_models import (
+    DefenseAutoCloseResponse,
     DefenseLogEvent,
     DefenseLogEventCreate,
     DefenseLogEventRead,
     DefenseIngestResponse,
+    DefenseReanalyzeRequest,
+    DefenseReanalyzeResponse,
     ThreatAlert,
     ThreatAlertRead,
     ThreatAlertStatusUpdate,
@@ -51,7 +55,13 @@ async def ingest_defense_event(
     auto_analyze: bool = Query(default=True),
 ):
     service = _service(session)
-    response = service.ingest_event(payload=payload, auto_analyze=auto_analyze)
+    response = service.ingest_event(
+        payload=payload,
+        auto_analyze=auto_analyze,
+        auto_close_stale_alerts=settings.DEFENSE_AUTO_CLOSE_STALE_ALERTS,
+        ttl_minutes=settings.DEFENSE_ALERT_TTL_MINUTES,
+        include_critical_stale=settings.DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL,
+    )
     return response
 
 
@@ -66,12 +76,36 @@ async def ingest_defense_events_batch(
     auto_analyze: bool = Query(default=True),
 ) -> dict[str, Any]:
     service = _service(session)
-    responses = service.ingest_events_batch(payloads=payloads, auto_analyze=auto_analyze)
+    responses = service.ingest_events_batch(
+        payloads=payloads,
+        auto_analyze=auto_analyze,
+        auto_close_stale_alerts=settings.DEFENSE_AUTO_CLOSE_STALE_ALERTS,
+        ttl_minutes=settings.DEFENSE_ALERT_TTL_MINUTES,
+        include_critical_stale=settings.DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL,
+    )
     return {
         "ingested_events": len(responses),
         "alerts_triggered": sum(len(item.triggered_alerts) for item in responses),
+        "duplicates_ignored": sum(1 for item in responses if item.duplicate_event),
         "items": [item.model_dump(mode="json") for item in responses],
     }
+
+
+@router.post(
+    "/events/reanalyze",
+    status_code=status.HTTP_200_OK,
+    summary="Re-analyze stored events to recalculate alerts after rule/threshold changes",
+    response_model=DefenseReanalyzeResponse,
+)
+async def reanalyze_defense_events(
+    payload: DefenseReanalyzeRequest,
+    session: SessionDep,
+):
+    service = _service(session)
+    try:
+        return service.reanalyze_historical_events(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get(
@@ -270,3 +304,25 @@ async def update_defense_alert_status(
     session.refresh(alert)
     logger.info(f"[Defense] Alert {alert.id} updated to status={normalized}.")
     return ThreatAlertRead.model_validate(alert)
+
+
+@router.post(
+    "/alerts/auto-close",
+    status_code=status.HTTP_200_OK,
+    summary="Close OPEN alerts that exceeded inactivity TTL",
+    response_model=DefenseAutoCloseResponse,
+)
+async def auto_close_defense_alerts(
+    session: SessionDep,
+    ttl_minutes: int = Query(default=settings.DEFENSE_ALERT_TTL_MINUTES, ge=1, le=10080),
+    include_critical: bool = Query(default=settings.DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL),
+    repository_id: int | None = Query(default=None),
+    source_system: str | None = Query(default=None),
+):
+    service = _service(session)
+    return service.autoclose_alerts(
+        ttl_minutes=ttl_minutes,
+        include_critical=include_critical,
+        repository_id=repository_id,
+        source_system=source_system,
+    )

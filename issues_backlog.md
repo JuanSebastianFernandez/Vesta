@@ -252,6 +252,24 @@
 - **Dependencias:** Issue 14
 - **Estimación:** 2 días
 
+## Issue 16.1: Hardening defensa activa (reanálisis, deduplicación, TTL y tests)
+- **Tipo:** feat
+- **Prioridad:** alta
+- **Labels sugeridas:** `defense`, `reliability`, `quality`, `P1`
+- **Descripción:** Endurecer el módulo de defensa activa para operación continua en producción.
+- **Tareas:**
+1. Agregar `POST /defense/events/reanalyze` para recalcular alertas históricas tras cambios de reglas.
+2. Implementar deduplicación por `raw_payload.event_id`/`event_external_id` en ingesta.
+3. Implementar autocierre TTL de alertas `OPEN` y endpoint manual de autocierre.
+4. Agregar pruebas automáticas de reglas (brute force, exfil, ransomware).
+- **Criterios de aceptación:**
+1. Eventos duplicados no generan nuevos registros ni alertas.
+2. Reanálisis histórico recalcula alertas en el alcance solicitado.
+3. Alertas stale se cierran automáticamente según TTL configurable.
+4. Tests unitarios de reglas pasan en CI/local.
+- **Dependencias:** Issue 16
+- **Estimación:** 2 días
+
 ## Issue 17: Agregar trigger gRPC stub hacia contención/honeypot
 - **Tipo:** feat
 - **Prioridad:** media
@@ -312,4 +330,3 @@
 2. CI corre en cada push/PR.
 - **Dependencias:** Issue 19
 - **Estimación:** 1 día
-

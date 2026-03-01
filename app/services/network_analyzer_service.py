@@ -5,10 +5,15 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.models.defense_models import (
     DefenseLogEvent,
     DefenseLogEventCreate,
+    DefenseLogEventRead,
+    DefenseAutoCloseResponse,
     DefenseIngestResponse,
+    DefenseReanalyzeRequest,
+    DefenseReanalyzeResponse,
     ThreatAlert,
     ThreatAlertRead,
     ThreatPatternRule,
@@ -113,6 +118,23 @@ class NetworkAnalyzerService:
     def __init__(self, session: Session):
         self.session = session
 
+    def _extract_external_event_id(self, payload: DefenseLogEventCreate) -> str | None:
+        if payload.event_external_id:
+            return str(payload.event_external_id).strip() or None
+
+        raw = payload.raw_payload or {}
+        if not isinstance(raw, dict):
+            return None
+
+        for candidate in ("event_id", "eventId", "eventID", "id", "uuid"):
+            value = raw.get(candidate)
+            if value is None:
+                continue
+            normalized = str(value).strip()
+            if normalized:
+                return normalized
+        return None
+
     def ensure_default_rules(self, sync_existing: bool = False) -> list[ThreatPatternRule]:
         created_or_updated: list[ThreatPatternRule] = []
         existing = {r.code: r for r in self.session.exec(select(ThreatPatternRule)).all()}
@@ -159,23 +181,55 @@ class NetworkAnalyzerService:
             self.session.refresh(rule)
         return created_or_updated
 
-    def _store_event(self, payload: DefenseLogEventCreate) -> DefenseLogEvent:
-        event = DefenseLogEvent(**payload.model_dump())
+    def _store_event(self, payload: DefenseLogEventCreate) -> tuple[DefenseLogEvent, bool]:
+        external_event_id = self._extract_external_event_id(payload)
+        if external_event_id:
+            existing_stmt = select(DefenseLogEvent).where(
+                DefenseLogEvent.source_system == payload.source_system,
+                DefenseLogEvent.event_external_id == external_event_id,
+            )
+            existing = self.session.exec(existing_stmt).first()
+            if existing:
+                return existing, True
+
+        data = payload.model_dump()
+        data["event_external_id"] = external_event_id
+        event = DefenseLogEvent(**data)
         self.session.add(event)
         self.session.commit()
         self.session.refresh(event)
-        return event
+        return event, False
 
     def ingest_event(
         self,
         payload: DefenseLogEventCreate,
         auto_analyze: bool = True,
         ensure_rules: bool = True,
+        auto_close_stale_alerts: bool = False,
+        ttl_minutes: int | None = None,
+        include_critical_stale: bool = False,
     ) -> DefenseIngestResponse:
         if ensure_rules:
             self.ensure_default_rules()
 
-        event = self._store_event(payload)
+        if auto_close_stale_alerts:
+            self.close_stale_open_alerts(
+                ttl_minutes=ttl_minutes or settings.DEFENSE_ALERT_TTL_MINUTES,
+                include_critical=include_critical_stale,
+                repository_id=payload.repository_id,
+                source_system=payload.source_system,
+            )
+
+        event, is_duplicate = self._store_event(payload)
+        if is_duplicate:
+            return DefenseIngestResponse(
+                event=DefenseLogEventRead.model_validate(event),
+                triggered_alerts=[],
+                analyzed_rules=0,
+                action_recommended="NONE",
+                duplicate_event=True,
+                duplicate_of_event_id=event.id,
+            )
 
         triggered_alerts: list[ThreatAlert] = []
         analyzed_rules = 0
@@ -188,14 +242,25 @@ class NetworkAnalyzerService:
             triggered_alerts=[ThreatAlertRead.model_validate(a) for a in triggered_alerts],
             analyzed_rules=analyzed_rules,
             action_recommended=action,
+            duplicate_event=False,
+            duplicate_of_event_id=None,
         )
 
     def ingest_events_batch(
         self,
         payloads: list[DefenseLogEventCreate],
         auto_analyze: bool = True,
+        auto_close_stale_alerts: bool = False,
+        ttl_minutes: int | None = None,
+        include_critical_stale: bool = False,
     ) -> list[DefenseIngestResponse]:
         self.ensure_default_rules()
+        if auto_close_stale_alerts:
+            self.close_stale_open_alerts(
+                ttl_minutes=ttl_minutes or settings.DEFENSE_ALERT_TTL_MINUTES,
+                include_critical=include_critical_stale,
+            )
+
         responses: list[DefenseIngestResponse] = []
         for payload in payloads:
             responses.append(
@@ -203,9 +268,160 @@ class NetworkAnalyzerService:
                     payload=payload,
                     auto_analyze=auto_analyze,
                     ensure_rules=False,
+                    auto_close_stale_alerts=False,
                 )
             )
         return responses
+
+    def close_stale_open_alerts(
+        self,
+        ttl_minutes: int,
+        include_critical: bool = False,
+        repository_id: int | None = None,
+        source_system: str | None = None,
+    ) -> int:
+        ttl = max(int(ttl_minutes or 1), 1)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=ttl)
+        stmt = select(ThreatAlert).where(
+            ThreatAlert.status == "OPEN",
+            ThreatAlert.updated_at < cutoff,
+        )
+        if repository_id is not None:
+            stmt = stmt.where(ThreatAlert.repository_id == repository_id)
+        if source_system:
+            stmt = stmt.where(ThreatAlert.source_system == source_system)
+        if not include_critical:
+            stmt = stmt.where(ThreatAlert.severity != "CRITICAL")
+
+        stale_alerts = list(self.session.exec(stmt).all())
+        if not stale_alerts:
+            return 0
+
+        now = datetime.datetime.utcnow()
+        for alert in stale_alerts:
+            alert.status = "RESOLVED"
+            suffix = " [AUTO_CLOSED_TTL]"
+            if suffix not in alert.summary:
+                alert.summary = f"{alert.summary}{suffix}"
+            alert.updated_at = now
+            self.session.add(alert)
+        self.session.commit()
+        return len(stale_alerts)
+
+    def _close_open_alerts_for_scope(
+        self,
+        repository_id: int | None = None,
+        source_system: str | None = None,
+        date_from: datetime.datetime | None = None,
+        date_to: datetime.datetime | None = None,
+    ) -> int:
+        stmt = select(ThreatAlert).where(ThreatAlert.status == "OPEN")
+        if repository_id is not None:
+            stmt = stmt.where(ThreatAlert.repository_id == repository_id)
+        if source_system:
+            stmt = stmt.where(ThreatAlert.source_system == source_system)
+        if date_from is not None:
+            stmt = stmt.where(ThreatAlert.updated_at >= date_from)
+        if date_to is not None:
+            stmt = stmt.where(ThreatAlert.updated_at <= date_to)
+
+        alerts = list(self.session.exec(stmt).all())
+        if not alerts:
+            return 0
+
+        now = datetime.datetime.utcnow()
+        for alert in alerts:
+            alert.status = "RESOLVED"
+            suffix = " [REANALYZE_RESET]"
+            if suffix not in alert.summary:
+                alert.summary = f"{alert.summary}{suffix}"
+            alert.updated_at = now
+            self.session.add(alert)
+        self.session.commit()
+        return len(alerts)
+
+    def reanalyze_historical_events(self, request: DefenseReanalyzeRequest) -> DefenseReanalyzeResponse:
+        if request.date_from and request.date_to and request.date_from > request.date_to:
+            raise ValueError("'date_from' must be earlier than or equal to 'date_to'.")
+
+        self.ensure_default_rules()
+        auto_closed_by_ttl = 0
+        if request.run_ttl_autoclose_before_reanalyze:
+            auto_closed_by_ttl = self.close_stale_open_alerts(
+                ttl_minutes=settings.DEFENSE_ALERT_TTL_MINUTES,
+                include_critical=settings.DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL,
+                repository_id=request.repository_id,
+                source_system=request.source_system,
+            )
+
+        closed_before_reanalyze = 0
+        if request.close_existing_open_alerts:
+            closed_before_reanalyze = self._close_open_alerts_for_scope(
+                repository_id=request.repository_id,
+                source_system=request.source_system,
+                date_from=request.date_from,
+                date_to=request.date_to,
+            )
+
+        stmt = select(DefenseLogEvent)
+        if request.repository_id is not None:
+            stmt = stmt.where(DefenseLogEvent.repository_id == request.repository_id)
+        if request.source_system:
+            stmt = stmt.where(DefenseLogEvent.source_system == request.source_system)
+        if request.date_from is not None:
+            stmt = stmt.where(DefenseLogEvent.event_time >= request.date_from)
+        if request.date_to is not None:
+            stmt = stmt.where(DefenseLogEvent.event_time <= request.date_to)
+
+        events = list(
+            self.session.exec(
+                stmt.order_by(DefenseLogEvent.event_time.asc()).limit(request.event_limit)
+            ).all()
+        )
+        if not events:
+            return DefenseReanalyzeResponse(
+                events_scanned=0,
+                events_reanalyzed=0,
+                rules_evaluated=0,
+                alerts_triggered_or_updated=0,
+                alerts_closed_before_reanalyze=closed_before_reanalyze,
+                alerts_auto_closed_by_ttl=auto_closed_by_ttl,
+            )
+
+        total_rules_evaluated = 0
+        total_alerts_touched = 0
+        for event in events:
+            alerts, analyzed_rules = self.analyze_event_context(event)
+            total_rules_evaluated += analyzed_rules
+            total_alerts_touched += len(alerts)
+
+        return DefenseReanalyzeResponse(
+            events_scanned=len(events),
+            events_reanalyzed=len(events),
+            rules_evaluated=total_rules_evaluated,
+            alerts_triggered_or_updated=total_alerts_touched,
+            alerts_closed_before_reanalyze=closed_before_reanalyze,
+            alerts_auto_closed_by_ttl=auto_closed_by_ttl,
+        )
+
+    def autoclose_alerts(
+        self,
+        ttl_minutes: int,
+        include_critical: bool = False,
+        repository_id: int | None = None,
+        source_system: str | None = None,
+    ) -> DefenseAutoCloseResponse:
+        closed = self.close_stale_open_alerts(
+            ttl_minutes=ttl_minutes,
+            include_critical=include_critical,
+            repository_id=repository_id,
+            source_system=source_system,
+        )
+        return DefenseAutoCloseResponse(
+            ttl_minutes=ttl_minutes,
+            include_critical=include_critical,
+            closed_alerts=closed,
+        )
 
     def analyze_event_context(self, event: DefenseLogEvent) -> tuple[list[ThreatAlert], int]:
         active_rules = list(

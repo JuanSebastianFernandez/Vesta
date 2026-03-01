@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS defense_log_event (
     id SERIAL PRIMARY KEY,
     repository_id INTEGER NULL REFERENCES repository(id),
     source_system VARCHAR(120) NOT NULL,
+    event_external_id VARCHAR(255) NULL,
     source_ip VARCHAR(64) NULL,
     host_id VARCHAR(255) NULL,
     user_id VARCHAR(255) NULL,
@@ -59,6 +60,22 @@ CREATE TABLE IF NOT EXISTS threat_alert (
 
 CREATE INDEX IF NOT EXISTS ix_defense_log_event_repository_id ON defense_log_event (repository_id);
 CREATE INDEX IF NOT EXISTS ix_defense_log_event_source_system ON defense_log_event (source_system);
+CREATE INDEX IF NOT EXISTS ix_defense_log_event_event_external_id ON defense_log_event (event_external_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM defense_log_event
+        WHERE event_external_id IS NOT NULL
+        GROUP BY source_system, event_external_id
+        HAVING COUNT(*) > 1
+    ) THEN
+        EXECUTE 'CREATE UNIQUE INDEX IF NOT EXISTS uq_defense_log_event_source_system_external_id
+                 ON defense_log_event (source_system, event_external_id)
+                 WHERE event_external_id IS NOT NULL';
+    END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS ix_defense_log_event_source_ip ON defense_log_event (source_ip);
 CREATE INDEX IF NOT EXISTS ix_defense_log_event_host_id ON defense_log_event (host_id);
 CREATE INDEX IF NOT EXISTS ix_defense_log_event_user_id ON defense_log_event (user_id);
