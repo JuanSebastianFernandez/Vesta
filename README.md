@@ -94,6 +94,56 @@ Formato esperado por entrada JSON:
 - `original_code`
 - `static_findings` (array ANTLR con `weight` y/o `severity`)
 
+## Score de Riesgo Unificado (Issue 13)
+El resultado final del job asíncrono incluye `result.unified_risk` con una fórmula única de 0 a 100.
+
+Fórmula versionada (`v1.0.0`):
+- `unified_risk_score = sast_score * 0.60 + dast_score * 0.40`
+
+Niveles:
+- `LOW`: 0.00 - 24.99
+- `MEDIUM`: 25.00 - 49.99
+- `HIGH`: 50.00 - 74.99
+- `CRITICAL`: 75.00 - 100.00
+
+Dónde aparece:
+- `GET /prevention/jobs/{job_id}/result` -> `result.unified_risk`
+
+Contenido principal:
+- `risk_score`, `risk_level`
+- `formula_version`, `weights`, `thresholds`
+- `components` (`sast_score`, `dast_score`, ponderados)
+- `details` con desglose de señales SAST y DAST usadas
+
+## Contrato JSON Dashboard (Issue 14)
+El endpoint `GET /prevention/jobs/{job_id}/result` retorna un contrato estable y versionado en `result`.
+
+Campos top-level del contrato:
+- `schema_version`
+- `repository`
+- `analysis`
+- `summary`
+- `totals`
+- `risk`
+- `dast`
+- `files` (canónico por archivo)
+- `reports` (alias de compatibilidad, mismo contenido que `files`)
+
+Ejemplo resumido:
+```json
+{
+  "schema_version": "1.0.0",
+  "repository": {"id": 6, "url": "https://github.com/org/repo", "name": "repo", "commit_hash": "main"},
+  "analysis": {"job_id": "uuid", "trigger_source": "MANUAL", "status": "DONE"},
+  "summary": {"total_reports": 7, "status_counts": {"BENIGN": 2, "SUSPICIOUS": 3, "SKIPPED": 2}},
+  "totals": {"files_analyzed": 7, "files_with_findings": 3, "findings_total": 5},
+  "risk": {"risk_score": 52.4, "risk_level": "HIGH", "formula_version": "v1.0.0"},
+  "dast": {"status": "SUCCESS"},
+  "files": [{"file_name": "main.py", "security_status": "SUSPICIOUS", "amount_findings": 2}],
+  "reports": [{"file_name": "main.py", "security_status": "SUSPICIOUS", "amount_findings": 2}]
+}
+```
+
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
 - Los repositorios clonados se almacenan en `~/vesta_cloned_repos`.

@@ -10,6 +10,8 @@ from app.core.exceptions import RepositoryError, AnalysisError, ModelLoadingErro
 from app.services.repository_manager import RepositoryManager
 from app.services.report_service import ReportService
 from app.services.dynamic_analysis_service import DynamicAnalysisService
+from app.services.risk_scoring_service import RiskScoringService
+from app.services.dashboard_contract_service import DashboardContractService
 from app.core.config import settings
 from db.database import get_session, engine
 from app.utilities.logger import logger
@@ -23,6 +25,8 @@ router = APIRouter(
 SessionDep = Annotated[Session, Depends(get_session)]
 repo_manager = RepositoryManager()
 dynamic_analysis_service = DynamicAnalysisService()
+risk_scoring_service = RiskScoringService()
+dashboard_contract_service = DashboardContractService()
 
 
 def _normalize_repo_name(repo_url: str) -> str:
@@ -117,15 +121,22 @@ def _run_analysis_job_background(job_id: str) -> None:
             )
             repo_path = repo_manager.get_repo_path(job.repository_name)
             dast_result = dynamic_analysis_service.analyze_repository(repo_path)
+            unified_risk = risk_scoring_service.compute_unified_risk(
+                response_reports=response_reports,
+                dast_result=dast_result,
+            )
+            summary = _summarize_analysis_results(response_reports)
 
             job.status = "DONE"
             job.finished_at = datetime.datetime.utcnow()
             job.error_message = None
-            job.result_summary = {
-                "summary": _summarize_analysis_results(response_reports),
-                "dast": dast_result,
-                "reports": [_compact_report_result(item) for item in response_reports],
-            }
+            job.result_summary = dashboard_contract_service.build_job_result_contract(
+                job=job,
+                response_reports=response_reports,
+                summary=summary,
+                dast_result=dast_result,
+                unified_risk=unified_risk,
+            )
             bg_session.add(job)
             bg_session.commit()
             logger.info(f"[Job runner] AnalysisJob '{job_id}' completed.")
@@ -295,10 +306,16 @@ def _process_github_push_background(repo_url: str, repo_name: str, head_commit_i
             )
         repo_path = repo_manager.get_repo_path(repo_name)
         dast_result = dynamic_analysis_service.analyze_repository(repo_path)
+        unified_risk = risk_scoring_service.compute_unified_risk(
+            response_reports=response_reports,
+            dast_result=dast_result,
+        )
         logger.info(
             f"[GitHub webhook background] done delivery={delivery_id} "
             f"reports_total={len(response_reports)} "
-            f"dast_status={dast_result.get('status')}"
+            f"dast_status={dast_result.get('status')} "
+            f"risk_score={unified_risk.get('risk_score')} "
+            f"risk_level={unified_risk.get('risk_level')}"
         )
     except Exception as e:
         logger.exception(f"[GitHub webhook background] failed delivery={delivery_id}: {e}")
@@ -308,6 +325,7 @@ def _process_github_push_background(repo_url: str, repo_name: str, head_commit_i
 async def github_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
+    session: SessionDep,
     x_hub_signature_256: Annotated[str | None, Header()] = None,
     x_github_delivery: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
@@ -372,17 +390,22 @@ async def github_webhook(
         )
 
     delivery_id = x_github_delivery or "unknown-delivery-id"
+    job = AnalysisJob(
+        repository_url=repo_url,
+        repository_name=repo_name,
+        commit_hash=head_commit_id,
+        trigger_source="WEBHOOK_GITHUB",
+        status="PENDING",
+    )
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+
     logger.info(
         f"'push' event accepted for repository '{repo_name}'. Commit: {head_commit_id}. "
-        f"delivery_id={delivery_id}"
+        f"delivery_id={delivery_id} job_id={job.id}"
     )
-    background_tasks.add_task(
-        _process_github_push_background,
-        repo_url,
-        repo_name,
-        head_commit_id,
-        delivery_id,
-    )
+    background_tasks.add_task(_run_analysis_job_background, job.id)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED,
@@ -391,6 +414,7 @@ async def github_webhook(
             "repository": repo_name,
             "commit": head_commit_id,
             "delivery_id": delivery_id,
+            "job_id": job.id,
             "status": "ACCEPTED",
         },
     )
