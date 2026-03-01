@@ -168,6 +168,54 @@ Retorna:
 - detalle por archivo
 - validación por componente/hallazgo (`components`) con `issues` por finding
 
+## Defensa Activa por Telemetría de Logs (Issue 16)
+Se agregó un router independiente en `"/defense"` para análisis conductual sobre eventos de logs/red y persistencia de patrones/alertas en BD.
+
+Tablas nuevas:
+- `defense_log_event`: eventos ingeridos con contexto y payload crudo.
+- `threat_pattern_rule`: reglas de comportamiento persistidas/ajustables.
+- `threat_alert`: alertas generadas con severidad, score, confianza y evidencia contextual.
+
+Endpoints principales:
+- `POST /defense/events`: ingesta 1 evento y evaluación contextual.
+- `POST /defense/events/batch`: ingesta por lote.
+- `GET /defense/events`: consulta eventos con filtros y paginación.
+- `POST /defense/rules/seed`: siembra/sincroniza reglas por defecto.
+- `GET /defense/rules`: lista reglas activas.
+- `PATCH /defense/rules/{rule_id}`: ajusta umbrales/ventanas/pesos/severidad.
+- `GET /defense/alerts`: lista alertas con filtros y paginación.
+- `GET /defense/alerts/{alert_id}`: detalle de alerta.
+- `PATCH /defense/alerts/{alert_id}/status`: transición `OPEN|ACKNOWLEDGED|RESOLVED`.
+
+Reglas iniciales (MVP):
+- `BRUTE_FORCE_AUTH`
+- `LATERAL_MOVEMENT_SCAN`
+- `SUSPICIOUS_COMMAND_EXECUTION`
+- `DATA_EXFILTRATION_PATTERN`
+- `RANSOMWARE_BEHAVIORAL_PATTERN`
+
+Ejemplo de ingesta:
+```json
+{
+  "repository_id": 7,
+  "source_system": "EDR",
+  "source_ip": "10.20.30.40",
+  "host_id": "ws-001",
+  "user_id": "alice",
+  "event_type": "COMMAND_EXECUTION",
+  "severity": "HIGH",
+  "message": "PowerShell encoded command detected",
+  "event_time": "2026-03-01T10:20:30Z",
+  "event_context": {
+    "suspicious_command": true,
+    "process_name": "powershell.exe",
+    "destination_ip": "185.10.10.10",
+    "bytes_out": 1200000
+  },
+  "raw_payload": {"vendor": "edr-x", "event_id": "evt-123"}
+}
+```
+
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
 - Los repositorios clonados se almacenan en `~/vesta_cloned_repos`.
