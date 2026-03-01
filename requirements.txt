@@ -17,5 +17,7 @@ tensorflow==2.18.1
 torch==2.8.0
 transformers==4.56.1
 docker==7.1.0
+grpcio==1.74.0
+protobuf==5.29.3
 
 coloredlogs==15.0.1

@@ -63,6 +63,12 @@ uvicorn app.main:app --reload
 - `DEFENSE_AUTO_CLOSE_STALE_ALERTS`: activa autocierre TTL de alertas `OPEN` en módulo defensa.
 - `DEFENSE_ALERT_TTL_MINUTES`: minutos de inactividad para autocierre.
 - `DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL`: incluye `CRITICAL` en autocierre TTL.
+- `DEFENSE_GRPC_ENABLED`: activa trigger gRPC hacia contención/honeypot.
+- `DEFENSE_GRPC_TARGET`: host:puerto del orquestador gRPC de contención.
+- `DEFENSE_GRPC_TIMEOUT_SECONDS`: timeout por intento gRPC.
+- `DEFENSE_GRPC_RETRY_MAX`: reintentos máximos por trigger.
+- `DEFENSE_GRPC_RETRY_BACKOFF_SECONDS`: backoff lineal entre reintentos.
+- `DEFENSE_GRPC_TRIGGER_MIN_SCORE`: score mínimo para disparar trigger.
 
 ## Calibración de umbral (Issue 6.1)
 Para evitar el sesgo de “todo malicioso”, calibra el umbral con datos reales de tu entorno.
@@ -225,6 +231,49 @@ Mejoras Issue 16.1:
 - Deduplicación por `raw_payload.event_id` (o `event_external_id`) para ignorar eventos repetidos SIEM/EDR.
 - Reanálisis histórico por ventana/repositorio/fuente para recalcular alertas luego de cambios en reglas.
 - Cierre automático de alertas `OPEN` inactivas (TTL configurable) para reducir fatiga operativa.
+
+## Trigger gRPC a Contención/Honeypot (Issue 17)
+Se agregó integración gRPC stub para notificar al módulo de contención cuando la amenaza supera umbral operativo.
+
+Objetivo:
+- desacoplar detección (defense) de respuesta (containment/honeypot),
+- disparar respuesta solo bajo condiciones fuertes,
+- no bloquear análisis si el destino gRPC falla.
+
+Archivo proto mínimo:
+- `app/grpc/protos/containment_trigger.proto`
+- servicio: `vesta.containment.ContainmentOrchestrator/TriggerContainment`
+- mensajes: `ContainmentRequest`, `ContainmentResponse`.
+
+Cliente stub:
+- `app/services/containment_grpc_client.py`
+- conexión `grpc.insecure_channel(...)`
+- llamada unary `TriggerContainment`
+- reintentos con backoff y timeout configurable.
+
+Regla de disparo automático:
+- se evalúa en `NetworkAnalyzerService` después de generar alertas por evento.
+- solo dispara si:
+  - `action_recommended` es `ESCALATE_SOC` o `TRIGGER_CONTAINMENT`,
+  - `max_alert_score >= DEFENSE_GRPC_TRIGGER_MIN_SCORE`.
+- si no cumple, retorna `containment_trigger.status = SKIPPED`.
+
+Resiliencia:
+- si falla gRPC, no se cae el flujo de análisis del evento.
+- el resultado queda en `containment_trigger` con `status = FAILED`.
+- se registran intentos y error en logs.
+
+Dónde se ve el resultado:
+- `POST /defense/events` -> campo `containment_trigger` en la respuesta.
+- `POST /defense/events/batch` -> agrega `containment_triggers_sent`.
+
+Endpoint de prueba manual:
+- `POST /defense/containment/trigger-test`
+- envía payload arbitrario al stub para validar conectividad/reintentos sin esperar detección real.
+
+Pruebas automáticas asociadas:
+- `test/test_containment_grpc_client.py` (skip, retry-success, retry-failed).
+- `test/test_network_analyzer_service.py` (disparo condicional por umbral).
 
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.

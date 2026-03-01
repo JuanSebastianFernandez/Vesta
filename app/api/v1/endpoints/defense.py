@@ -87,6 +87,9 @@ async def ingest_defense_events_batch(
         "ingested_events": len(responses),
         "alerts_triggered": sum(len(item.triggered_alerts) for item in responses),
         "duplicates_ignored": sum(1 for item in responses if item.duplicate_event),
+        "containment_triggers_sent": sum(
+            1 for item in responses if item.containment_trigger and item.containment_trigger.get("status") == "SENT"
+        ),
         "items": [item.model_dump(mode="json") for item in responses],
     }
 
@@ -326,3 +329,16 @@ async def auto_close_defense_alerts(
         repository_id=repository_id,
         source_system=source_system,
     )
+
+
+@router.post(
+    "/containment/trigger-test",
+    status_code=status.HTTP_200_OK,
+    summary="Send a manual test payload to containment gRPC stub",
+)
+async def trigger_containment_test(
+    payload: dict[str, Any],
+    session: SessionDep,
+) -> dict[str, Any]:
+    service = _service(session)
+    return service.containment_client.trigger_containment(payload)

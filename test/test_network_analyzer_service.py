@@ -1,6 +1,7 @@
 import datetime
 import unittest
 
+from app.core.config import settings
 from app.models.defense_models import DefenseLogEvent, ThreatPatternRule
 from app.services.network_analyzer_service import NetworkAnalyzerService
 
@@ -9,9 +10,26 @@ class _DummySession:
     pass
 
 
+class _FakeContainmentClient:
+    def __init__(self):
+        self.calls = []
+
+    def trigger_containment(self, payload):
+        self.calls.append(payload)
+        return {
+            "attempted": True,
+            "status": "SENT",
+            "endpoint": "fake-endpoint",
+            "retries_used": 0,
+            "message": "ok",
+            "response": {"accepted": True},
+        }
+
+
 class TestNetworkAnalyzerServiceRules(unittest.TestCase):
     def setUp(self):
-        self.service = NetworkAnalyzerService(session=_DummySession())
+        self.fake_client = _FakeContainmentClient()
+        self.service = NetworkAnalyzerService(session=_DummySession(), containment_client=self.fake_client)
         self.now = datetime.datetime.utcnow()
 
     def _event(
@@ -162,6 +180,67 @@ class TestNetworkAnalyzerServiceRules(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertGreaterEqual(result["unique_targets"], 2)
         self.assertGreaterEqual(result["evidence_count"], 4)
+
+    def test_containment_trigger_skipped_when_threshold_not_met(self):
+        old_threshold = settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE
+        settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE = 80.0
+        try:
+            event = self._event(
+                event_type="COMMAND_EXECUTION",
+                message="encoded command execution",
+                context={"suspicious_command": True},
+            )
+            from app.models.defense_models import ThreatAlert
+
+            alert = ThreatAlert(
+                rule_code="SUSPICIOUS_COMMAND_EXECUTION",
+                source_system="EDR",
+                severity="HIGH",
+                score=72.0,
+                confidence=0.9,
+                status="OPEN",
+                summary="suspicious command",
+            )
+            outcome = self.service._trigger_containment_if_needed(
+                event=event,
+                alerts=[alert],
+                action_recommended="ESCALATE_SOC",
+            )
+            self.assertEqual(outcome["status"], "SKIPPED")
+            self.assertEqual(len(self.fake_client.calls), 0)
+        finally:
+            settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE = old_threshold
+
+    def test_containment_trigger_sent_when_threshold_met(self):
+        old_threshold = settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE
+        settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE = 65.0
+        try:
+            event = self._event(
+                event_type="COMMAND_EXECUTION",
+                message="encoded command execution",
+                context={"suspicious_command": True},
+            )
+            from app.models.defense_models import ThreatAlert
+
+            alert = ThreatAlert(
+                rule_code="SUSPICIOUS_COMMAND_EXECUTION",
+                source_system="EDR",
+                severity="HIGH",
+                score=88.0,
+                confidence=0.97,
+                status="OPEN",
+                summary="high confidence compromise",
+            )
+            outcome = self.service._trigger_containment_if_needed(
+                event=event,
+                alerts=[alert],
+                action_recommended="TRIGGER_CONTAINMENT",
+            )
+            self.assertEqual(outcome["status"], "SENT")
+            self.assertEqual(len(self.fake_client.calls), 1)
+            self.assertGreaterEqual(outcome["max_alert_score"], 88.0)
+        finally:
+            settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE = old_threshold
 
 
 if __name__ == "__main__":

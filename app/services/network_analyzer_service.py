@@ -1,6 +1,7 @@
 from __future__ import annotations
 import datetime
 import ipaddress
+import uuid
 from typing import Any
 
 from sqlmodel import Session, select
@@ -19,6 +20,7 @@ from app.models.defense_models import (
     ThreatPatternRule,
     ThreatPatternRuleRead,
 )
+from app.services.containment_grpc_client import ContainmentGrpcClient
 
 
 class NetworkAnalyzerService:
@@ -115,8 +117,15 @@ class NetworkAnalyzerService:
         },
     ]
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, containment_client: ContainmentGrpcClient | None = None):
         self.session = session
+        self.containment_client = containment_client or ContainmentGrpcClient(
+            enabled=settings.DEFENSE_GRPC_ENABLED,
+            target=settings.DEFENSE_GRPC_TARGET,
+            timeout_seconds=settings.DEFENSE_GRPC_TIMEOUT_SECONDS,
+            retry_max=settings.DEFENSE_GRPC_RETRY_MAX,
+            retry_backoff_seconds=settings.DEFENSE_GRPC_RETRY_BACKOFF_SECONDS,
+        )
 
     def _extract_external_event_id(self, payload: DefenseLogEventCreate) -> str | None:
         if payload.event_external_id:
@@ -229,6 +238,11 @@ class NetworkAnalyzerService:
                 action_recommended="NONE",
                 duplicate_event=True,
                 duplicate_of_event_id=event.id,
+                containment_trigger={
+                    "attempted": False,
+                    "status": "SKIPPED",
+                    "message": "Duplicate event ignored; containment trigger not evaluated.",
+                },
             )
 
         triggered_alerts: list[ThreatAlert] = []
@@ -237,6 +251,11 @@ class NetworkAnalyzerService:
             triggered_alerts, analyzed_rules = self.analyze_event_context(event)
 
         action = self._recommend_action(triggered_alerts)
+        containment_trigger = self._trigger_containment_if_needed(
+            event=event,
+            alerts=triggered_alerts,
+            action_recommended=action,
+        )
         return DefenseIngestResponse(
             event=event,
             triggered_alerts=[ThreatAlertRead.model_validate(a) for a in triggered_alerts],
@@ -244,6 +263,7 @@ class NetworkAnalyzerService:
             action_recommended=action,
             duplicate_event=False,
             duplicate_of_event_id=None,
+            containment_trigger=containment_trigger,
         )
 
     def ingest_events_batch(
@@ -812,6 +832,94 @@ class NetworkAnalyzerService:
         if "HIGH" in severities or highest_score >= 65.0:
             return "ESCALATE_SOC"
         return "MANUAL_REVIEW"
+
+    def _should_trigger_containment(
+        self,
+        *,
+        alerts: list[ThreatAlert],
+        action_recommended: str,
+    ) -> tuple[bool, float, str]:
+        if not alerts:
+            return False, 0.0, "No alerts generated for this event."
+        if action_recommended not in {"ESCALATE_SOC", "TRIGGER_CONTAINMENT"}:
+            return False, 0.0, f"Action '{action_recommended}' does not require containment trigger."
+
+        highest_score = max(float(a.score or 0.0) for a in alerts)
+        if highest_score < float(settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE):
+            return (
+                False,
+                highest_score,
+                (
+                    f"Highest score {highest_score:.2f} is below threshold "
+                    f"{settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE:.2f}."
+                ),
+            )
+        return True, highest_score, "Threshold met for containment trigger."
+
+    def _build_containment_payload(
+        self,
+        *,
+        event: DefenseLogEvent,
+        alerts: list[ThreatAlert],
+        action_recommended: str,
+        highest_score: float,
+    ) -> dict[str, Any]:
+        top_alert = max(alerts, key=lambda a: float(a.score or 0.0))
+        return {
+            "trigger_id": str(uuid.uuid4()),
+            "source_system": event.source_system,
+            "repository_id": str(event.repository_id) if event.repository_id is not None else "",
+            "event_id": str(event.id) if event.id is not None else "",
+            "action_recommended": action_recommended,
+            "max_alert_score": round(highest_score, 2),
+            "max_alert_severity": str(top_alert.severity or "").upper(),
+            "occurred_at": (event.event_time.isoformat() + "Z") if event.event_time else "",
+            "summary": str(top_alert.summary or "")[:500],
+            "alerts_count": len(alerts),
+            "alerts": [
+                {
+                    "id": a.id,
+                    "rule_code": a.rule_code,
+                    "severity": a.severity,
+                    "score": a.score,
+                    "confidence": a.confidence,
+                    "summary": a.summary,
+                }
+                for a in alerts
+            ],
+        }
+
+    def _trigger_containment_if_needed(
+        self,
+        *,
+        event: DefenseLogEvent,
+        alerts: list[ThreatAlert],
+        action_recommended: str,
+    ) -> dict[str, Any]:
+        should_trigger, highest_score, reason = self._should_trigger_containment(
+            alerts=alerts,
+            action_recommended=action_recommended,
+        )
+        if not should_trigger:
+            return {
+                "attempted": False,
+                "status": "SKIPPED",
+                "threshold_score": float(settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE),
+                "max_alert_score": round(highest_score, 2),
+                "message": reason,
+                "response": None,
+            }
+
+        payload = self._build_containment_payload(
+            event=event,
+            alerts=alerts,
+            action_recommended=action_recommended,
+            highest_score=highest_score,
+        )
+        result = self.containment_client.trigger_containment(payload)
+        result["threshold_score"] = float(settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE)
+        result["max_alert_score"] = round(highest_score, 2)
+        return result
 
     def list_rules(self) -> list[ThreatPatternRuleRead]:
         rules = list(self.session.exec(select(ThreatPatternRule).order_by(ThreatPatternRule.code)).all())

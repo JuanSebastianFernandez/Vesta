@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     DEFENSE_AUTO_CLOSE_STALE_ALERTS: bool = _env_bool("DEFENSE_AUTO_CLOSE_STALE_ALERTS", "true")
     DEFENSE_ALERT_TTL_MINUTES: int = int(os.getenv("DEFENSE_ALERT_TTL_MINUTES", "180"))
     DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL: bool = _env_bool("DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL", "false")
+    DEFENSE_GRPC_ENABLED: bool = _env_bool("DEFENSE_GRPC_ENABLED", "true")
+    DEFENSE_GRPC_TARGET: str = os.getenv("DEFENSE_GRPC_TARGET", "127.0.0.1:50051")
+    DEFENSE_GRPC_TIMEOUT_SECONDS: float = float(os.getenv("DEFENSE_GRPC_TIMEOUT_SECONDS", "3.0"))
+    DEFENSE_GRPC_RETRY_MAX: int = int(os.getenv("DEFENSE_GRPC_RETRY_MAX", "2"))
+    DEFENSE_GRPC_RETRY_BACKOFF_SECONDS: float = float(os.getenv("DEFENSE_GRPC_RETRY_BACKOFF_SECONDS", "0.4"))
+    DEFENSE_GRPC_TRIGGER_MIN_SCORE: float = float(os.getenv("DEFENSE_GRPC_TRIGGER_MIN_SCORE", "65.0"))
 
     @property
     def URL_DATABASE(self) -> str:

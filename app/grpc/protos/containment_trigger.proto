@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package vesta.containment;
+
+message ContainmentRequest {
+  string trigger_id = 1;
+  string source_system = 2;
+  string repository_id = 3;
+  string event_id = 4;
+  string action_recommended = 5;
+  double max_alert_score = 6;
+  string max_alert_severity = 7;
+  string occurred_at = 8;
+  string summary = 9;
+  string payload_json = 10;
+}
+
+message ContainmentResponse {
+  bool accepted = 1;
+  string ticket_id = 2;
+  string action = 3;
+  string message = 4;
+}
+
+service ContainmentOrchestrator {
+  rpc TriggerContainment(ContainmentRequest) returns (ContainmentResponse);
+}

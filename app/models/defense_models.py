@@ -119,6 +119,7 @@ class DefenseIngestResponse(SQLModel):
     action_recommended: str = "NONE"
     duplicate_event: bool = False
     duplicate_of_event_id: Optional[int] = None
+    containment_trigger: Optional[dict[str, Any]] = None
 
 
 class DefenseReanalyzeRequest(SQLModel):
