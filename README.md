@@ -275,6 +275,21 @@ Pruebas automáticas asociadas:
 - `test/test_containment_grpc_client.py` (skip, retry-success, retry-failed).
 - `test/test_network_analyzer_service.py` (disparo condicional por umbral).
 
+## Módulo de Contención (Issue 18)
+Se agregó el router `/containment` con acciones stub auditadas:
+- `POST /containment/isolate-node`
+- `POST /containment/block-ip`
+- `POST /containment/restore-backup`
+- `POST /containment/deploy-honeypot`
+- `GET /containment/actions`
+- `GET /containment/actions/{action_id}`
+- `PATCH /containment/actions/{action_id}/status`
+
+Toda acción se persiste en `containment_action_audit` con `who/when/why`, estado y detalles.
+
+Documentación operativa completa:
+- `defense_containment_honeypot_operations.md`
+
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.
 - Los repositorios clonados se almacenan en `~/vesta_cloned_repos`.
