@@ -41,6 +41,21 @@ uvicorn app.main:app --reload
 - Health: `GET http://127.0.0.1:8000/health/`
 - Docs: `http://127.0.0.1:8000/docs`
 
+## CI (Issue 20)
+Se agregó workflow en `.github/workflows/ci.yml` con 3 gates:
+- `lint`: validación estática crítica con `ruff` (errores de sintaxis/nombres indefinidos).
+- `tests`: ejecución de `unittest` sobre `test/test_*.py`.
+- `smoke startup`: arranque mínimo de API y verificación de `"/"` + `"/health/"`.
+
+### Ejecutar los mismos gates en local
+```powershell
+pip install -r requirements-ci.txt
+pip install ruff
+ruff check app test scripts
+python -m unittest discover -s test -p "test_*.py"
+python scripts/smoke_startup.py
+```
+
 ## Variables de entorno
 - `GITHUB_WEBHOOK_SECRET`: secreto para validar webhook de GitHub.
 - `GITLAB_WEBHOOK_SECRET`: secreto para webhook de GitLab.

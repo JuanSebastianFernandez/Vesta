@@ -1,14 +1,41 @@
-import torch
+from typing import Any, Tuple
+
 import numpy as np
-from transformers import AutoModel, AutoTokenizer
-from typing import Tuple
+
 from app.utilities.logger import logger
 from app.core.config import settings
 
 MODEL_NAME = settings.TRANSFORMER_MODEL_NAME
 
 
-def load_codebert_model() -> Tuple[AutoModel, AutoTokenizer]:
+def _import_transformers_runtime() -> tuple[Any, Any]:
+    """
+    Lazy import for heavyweight ML runtime dependencies.
+
+    This keeps lightweight test/CI flows from requiring torch/transformers
+    until CodeBERT is actually needed.
+    """
+    try:
+        from transformers import AutoModel, AutoTokenizer  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise ImportError(
+            "transformers runtime is required to load CodeBERT. "
+            "Install optional ML dependencies (torch + transformers)."
+        ) from exc
+    return AutoModel, AutoTokenizer
+
+
+def _import_torch_runtime() -> Any:
+    try:
+        import torch  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise ImportError(
+            "torch runtime is required to generate CodeBERT embeddings."
+        ) from exc
+    return torch
+
+
+def load_codebert_model() -> Tuple[Any, Any]:
     """
     Download and charge the CodeBERT model and tokenizer.
     
@@ -22,6 +49,8 @@ def load_codebert_model() -> Tuple[AutoModel, AutoTokenizer]:
 
     logger.info("Loading CodeBERT model and tokenizer...")
     
+    AutoModel, AutoTokenizer = _import_transformers_runtime()
+
     # Charging the tokenizer and model from Hugging Face
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModel.from_pretrained(MODEL_NAME) # type: ignore
@@ -29,7 +58,7 @@ def load_codebert_model() -> Tuple[AutoModel, AutoTokenizer]:
     logger.info("✅ Model and Tokenizer loaded successfully.")
     return model, tokenizer
 
-def get_code_embedding(source_code: str, model: AutoModel, tokenizer: AutoTokenizer) -> np.ndarray:
+def get_code_embedding(source_code: str, model: Any, tokenizer: Any) -> np.ndarray:
     """
     Generate a embedding vector for a source code snippet.
 
@@ -41,6 +70,8 @@ def get_code_embedding(source_code: str, model: AutoModel, tokenizer: AutoTokeni
     Returns:
         np.ndarray: Numpy vector with 768 dimensions that represents the code.
     """
+    torch = _import_torch_runtime()
+
     # Deteced a disponible gpu
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.to(device) # type: ignore
