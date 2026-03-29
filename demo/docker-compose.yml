@@ -1,0 +1,53 @@
+services:
+  smartgrid-app:
+    build:
+      context: ./smart-grid-repo
+    container_name: vesta-demo-smartgrid-app
+    ports:
+      - "8010:8000"
+    networks:
+      - demo_prod
+    environment:
+      SMARTGRID_ENV: demo
+
+  smartgrid-db:
+    image: python:3.12-slim
+    container_name: vesta-demo-smartgrid-db
+    command: ["python", "-m", "http.server", "9100"]
+    networks:
+      - demo_prod
+
+  attacker-sim:
+    image: python:3.12-slim
+    container_name: vesta-demo-attacker-sim
+    command: ["python", "-c", "import time; time.sleep(10**8)"]
+    networks:
+      - demo_prod
+
+  collector:
+    image: python:3.12-slim
+    container_name: vesta-demo-collector
+    command: ["python", "-m", "http.server", "9200"]
+    networks:
+      - demo_prod
+
+  honeypot:
+    build:
+      context: ./honeypot
+    container_name: vesta-demo-honeypot
+    ports:
+      - "2222:2222"
+    networks:
+      - demo_deception
+
+networks:
+  demo_prod:
+    name: vesta_demo_prod
+    driver: bridge
+  demo_quarantine:
+    name: vesta_demo_quarantine
+    driver: bridge
+  demo_deception:
+    name: vesta_demo_deception
+    driver: bridge
+
