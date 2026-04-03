@@ -17,6 +17,10 @@ class _FakeExecResult:
     def all(self):
         return list(self._items)
 
+    def first(self):
+        items = list(self._items)
+        return items[0] if items else None
+
 
 class _FakeSession:
     def __init__(self):
@@ -44,10 +48,40 @@ class _FakeSession:
         return _FakeExecResult(self.items.values())
 
 
+class _FakeRuntimeService:
+    enabled = True
+    provider = "DEMO_DOCKER"
+
+    def __init__(self):
+        self.isolated = []
+        self.honeypots = []
+
+    def isolate_host(self, host_id):
+        self.isolated.append(host_id)
+        return {
+            "host_id": host_id,
+            "before_networks": ["vesta_demo_prod"],
+            "after_networks": ["vesta_demo_quarantine"],
+            "quarantine": True,
+        }
+
+    def deploy_honeypot(self, *, honeypot_profile, ttl_minutes, network_zone):
+        self.honeypots.append((honeypot_profile, ttl_minutes, network_zone))
+        return {
+            "container_name": "vesta-demo-honeypot",
+            "honeypot_profile": honeypot_profile,
+            "ttl_minutes": ttl_minutes,
+            "network_zone": network_zone,
+            "expires_at": "2030-01-01T00:00:00Z",
+            "status": "RUNNING",
+        }
+
+
 class TestContainmentService(unittest.TestCase):
     def setUp(self):
         self.session = _FakeSession()
-        self.service = ContainmentService(session=self.session)
+        self.runtime_service = _FakeRuntimeService()
+        self.service = ContainmentService(session=self.session, runtime_service=self.runtime_service)
 
     def test_isolate_node_creates_audited_action(self):
         payload = IsolateNodeRequest(
@@ -103,6 +137,34 @@ class TestContainmentService(unittest.TestCase):
                 record.id,
                 ContainmentActionStatusUpdate(status="NOT_ALLOWED"),
             )
+
+    def test_isolate_node_executes_demo_runtime_when_not_dry_run(self):
+        payload = IsolateNodeRequest(
+            reason="Contain runtime host in demo lab",
+            requested_by="demo.frontend",
+            dry_run=False,
+            host_id="smartgrid-app",
+        )
+        result = self.service.isolate_node(payload)
+        self.assertEqual(result.audit.execution_mode, "DEMO_DOCKER")
+        self.assertEqual(result.audit.status, "EXECUTED")
+        self.assertEqual(self.runtime_service.isolated, ["smartgrid-app"])
+
+    def test_deploy_honeypot_executes_demo_runtime_when_not_dry_run(self):
+        payload = DeployHoneypotRequest(
+            reason="Launch deception asset",
+            requested_by="demo.frontend",
+            dry_run=False,
+            decoy_target="smartgrid-decoy",
+            honeypot_profile="cowrie_ssh",
+            ttl_minutes=120,
+            network_zone="demo_deception",
+        )
+        result = self.service.deploy_honeypot(payload)
+        self.assertEqual(result.audit.execution_mode, "DEMO_DOCKER")
+        self.assertEqual(result.audit.status, "EXECUTED")
+        self.assertEqual(result.audit.details["ttl_minutes"], 120)
+        self.assertEqual(len(self.runtime_service.honeypots), 1)
 
 
 if __name__ == "__main__":

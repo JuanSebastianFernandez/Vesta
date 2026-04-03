@@ -1,5 +1,6 @@
 from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 
 
@@ -9,8 +10,21 @@ def create_db_and_tables():
     """
     Create the database and tables if they do not exist.
     """
-    SQLModel.metadata.create_all(engine)
-    _run_schema_patches()
+    try:
+        SQLModel.metadata.create_all(engine)
+        _run_schema_patches()
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            "PostgreSQL rejected the connection and psycopg2 could not decode the server error message. "
+            "This usually means the local DB credentials in .env are wrong, the role/database do not exist, "
+            "or PostgreSQL is returning a localized authentication error. "
+            f"Current target: {settings.URL_DATABASE!r}"
+        ) from exc
+    except SQLAlchemyError as exc:
+        raise RuntimeError(
+            "Failed to initialize the database schema. Verify PostgreSQL is running, the database exists, "
+            f"and the credentials in .env are correct. Current target: {settings.URL_DATABASE!r}"
+        ) from exc
 
 
 def _run_schema_patches():

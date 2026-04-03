@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import Settings
-from app.api.v1.endpoints import health, prevention, defense, containment
+from app.api.v1.endpoints import health, prevention, defense, containment, demo
 from db.database import create_db_and_tables
 
 # Start FastAPI application
@@ -22,6 +22,7 @@ app.include_router(health.router)
 app.include_router(prevention.router)
 app.include_router(defense.router)
 app.include_router(containment.router)
+app.include_router(demo.router)
 
 # Endpoints
 @app.get("/")

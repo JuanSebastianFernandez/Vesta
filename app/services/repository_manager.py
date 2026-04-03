@@ -30,6 +30,114 @@ class RepositoryManager:
         """Public accessor for local repository path."""
         return self._get_repo_path(repo_name)
 
+    def _normalize_repo_source(self, repo_url: str) -> str:
+        """Normalize local and remote repository references so we can compare origins safely."""
+        normalized = repo_url.strip().rstrip("/")
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+
+        possible_path = Path(normalized)
+        if possible_path.exists():
+            return possible_path.resolve().as_posix().lower()
+
+        return normalized.lower()
+
+    def _is_valid_git_repository(self, repo_path: Path) -> bool:
+        """Return whether a local path contains a readable Git repository."""
+        try:
+            git.Repo(repo_path)
+            return True
+        except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):  # type: ignore
+            return False
+
+    def _repo_origin_matches(self, repo_path: Path, repo_url: str) -> bool:
+        """Compare the local origin against the requested source URL/path."""
+        try:
+            repo = git.Repo(repo_path)
+            origin = repo.remotes.origin
+            origin_urls = list(origin.urls)
+            if not origin_urls:
+                return False
+            return self._normalize_repo_source(origin_urls[0]) == self._normalize_repo_source(repo_url)
+        except Exception:
+            return False
+
+    def _prepare_repository_target(self, repo_url: str, repo_name: str) -> Path:
+        """
+        Ensure the target folder is usable for the requested source.
+        If the folder contains an invalid repository or points to a different origin, re-clone it.
+        """
+        repo_path = self._get_repo_path(repo_name)
+        if not repo_path.exists():
+            return repo_path
+
+        if not self._is_valid_git_repository(repo_path):
+            logger.warning(
+                f"Repository path '{repo_path}' exists but is not a valid Git repository. Recreating it."
+            )
+            self.cleanup_repository(repo_name)
+            return repo_path
+
+        if not self._repo_origin_matches(repo_path, repo_url):
+            logger.info(
+                f"Repository '{repo_name}' exists with a different origin. Re-cloning from '{repo_url}'."
+            )
+            self.cleanup_repository(repo_name)
+
+        return repo_path
+
+    def _build_clone_error_message(self, repo_url: str, error: git.exc.GitCommandError) -> str:  # type: ignore
+        """Return a friendlier clone error for known Git issues used during demos."""
+        error_text = str(error)
+        if "detected dubious ownership" in error_text:
+            return (
+                "Git blocked access to the repository because the local '.git' directory belongs to a different "
+                "Windows user. For VESTA demos, prefer using a remote GitHub URL instead of a local repository path. "
+                "If you intentionally need the local path, mark it as safe with "
+                "'git config --global --add safe.directory <repo>/.git' and retry."
+            )
+        return f"Error executing Git command to clone: {error}"
+
+    def _build_checkout_error_message(self, reference: str, error: git.exc.GitCommandError) -> str:  # type: ignore
+        """Return a friendlier checkout error when users pass branches/tags in the commit field."""
+        error_text = str(error)
+        if "pathspec" in error_text and "did not match any file(s) known to git" in error_text:
+            return (
+                f"Reference '{reference}' was not found in the repository. "
+                "If you are using a branch for the VESTA demo, make sure it has been pushed to GitHub "
+                "(for example: `git push origin main baseline-clean suspicious-commit runtime-attackable`)."
+            )
+        return f"Error executing Git command for checkout: {error}"
+
+    def _checkout_reference(self, repo: git.Repo, reference: str) -> None:
+        """
+        Checkout a branch, tag, or commit. If the reference only exists on origin,
+        create/reset a local branch from the remote ref.
+        """
+        try:
+            repo.git.checkout(reference)
+            return
+        except git.exc.GitCommandError:
+            pass
+
+        origin = repo.remotes.origin
+        origin.fetch(prune=True, tags=True)
+
+        remote_ref_name = f"origin/{reference}"
+        remote_refs = {ref.name: ref for ref in origin.refs}
+        if remote_ref_name in remote_refs:
+            if reference in repo.heads:
+                repo.git.checkout(reference)
+                repo.git.reset("--hard", remote_ref_name)
+            else:
+                repo.git.checkout("-B", reference, remote_ref_name)
+            return
+
+        try:
+            repo.git.checkout(reference)
+        except git.exc.GitCommandError as error:  # type: ignore
+            raise RepositoryError(self._build_checkout_error_message(reference=reference, error=error))
+
     def _clone_repository(self, repo_url: str, repo_name: str, commit_hash: str|None = None) -> Path:
         """
         Clone a Git repository in the working directory.
@@ -46,12 +154,14 @@ class RepositoryManager:
             repo = git.Repo.clone_from(repo_url, repo_path)
             if commit_hash:
                 logger.info(f"Checkout to the specific commit: {commit_hash}")
-                repo.git.checkout(commit_hash)
+                self._checkout_reference(repo, commit_hash)
             logger.info("Repository has been cloned succesfully.")
             return repo_path
+        except RepositoryError:
+            raise
         except git.exc.GitCommandError as e:  # type: ignore
             logger.error(f"Git command error during cloning: {e}")
-            raise RepositoryError(f"Error executing Git command to clone: {e}")
+            raise RepositoryError(self._build_clone_error_message(repo_url=repo_url, error=e))
         except Exception as e:
             logger.error(f"Unexpected error during cloning: {e}")
             raise RepositoryError(f"Unexpected Error cloning repository: {e}")
@@ -75,7 +185,7 @@ class RepositoryManager:
             if commit_hash:
                 # Checkout to the specific commit
                 logger.info(f"Update repository '{repo_name}' and checkout to the specific commit: {commit_hash}...")
-                repo.git.checkout(commit_hash)
+                self._checkout_reference(repo, commit_hash)
             else:
                 # Pull the latest changes from the remote tracking branch
                 default_branch_name = 'main' # 'main' default
@@ -96,6 +206,8 @@ class RepositoryManager:
             
             logger.info(f"Repository '{repo_name}' update succesfully.")
             return repo_path
+        except RepositoryError:
+            raise
         except git.exc.GitCommandError as e: # type: ignore
             logger.error(f"Git command error during pull/checkout: {e}")
             raise RepositoryError(f"Error executing Git command for pull/checkout: {e}")
@@ -115,7 +227,7 @@ class RepositoryManager:
         Returns:
             List[Dict[str, Any]]: List of analyze reports for each file.
         """
-        repo_path: Path = self._get_repo_path(repo_name)
+        repo_path: Path = self._prepare_repository_target(repo_url=repo_url, repo_name=repo_name)
         
         if not repo_path.exists():
             # If not exists, we clone it.

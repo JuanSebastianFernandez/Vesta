@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     PROJECT_DESCRIPTION: str = "Artificial Intelligence for Cibersecurity"
 
     # Cors settings
-    CORS_ALLOW_ORIGINS: list[str] = ["http://localhost", "http://localhost:8080"]
+    CORS_ALLOW_ORIGINS: list[str] = [
+        "http://localhost",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+    ]
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_METHODS: list[str] = ["*"]
     CORS_ALLOW_HEADERS: list[str] = ["*"]
@@ -62,6 +66,7 @@ class Settings(BaseSettings):
     DAST_TSHARK_ENABLED: bool = _env_bool("DAST_TSHARK_ENABLED", "false")
     DAST_TSHARK_PATH: str = os.getenv("DAST_TSHARK_PATH", "tshark")
     DAST_TSHARK_INTERFACE: str = os.getenv("DAST_TSHARK_INTERFACE", "any")
+    DAST_PROFILE_RELATIVE_PATH: str = os.getenv("DAST_PROFILE_RELATIVE_PATH", ".vesta/dast.profile.json")
     DEFENSE_AUTO_CLOSE_STALE_ALERTS: bool = _env_bool("DEFENSE_AUTO_CLOSE_STALE_ALERTS", "true")
     DEFENSE_ALERT_TTL_MINUTES: int = int(os.getenv("DEFENSE_ALERT_TTL_MINUTES", "180"))
     DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL: bool = _env_bool("DEFENSE_AUTO_CLOSE_INCLUDE_CRITICAL", "false")
@@ -71,6 +76,22 @@ class Settings(BaseSettings):
     DEFENSE_GRPC_RETRY_MAX: int = int(os.getenv("DEFENSE_GRPC_RETRY_MAX", "2"))
     DEFENSE_GRPC_RETRY_BACKOFF_SECONDS: float = float(os.getenv("DEFENSE_GRPC_RETRY_BACKOFF_SECONDS", "0.4"))
     DEFENSE_GRPC_TRIGGER_MIN_SCORE: float = float(os.getenv("DEFENSE_GRPC_TRIGGER_MIN_SCORE", "65.0"))
+    DEMO_RUNTIME_ENABLED: bool = _env_bool("DEMO_RUNTIME_ENABLED", "true")
+    DEMO_RUNTIME_PROVIDER: str = os.getenv("DEMO_RUNTIME_PROVIDER", "DEMO_DOCKER")
+    DEMO_RUNTIME_SMARTGRID_HOST_ID: str = os.getenv("DEMO_RUNTIME_SMARTGRID_HOST_ID", "smartgrid-app")
+    DEMO_RUNTIME_SMARTGRID_CONTAINER: str = os.getenv(
+        "DEMO_RUNTIME_SMARTGRID_CONTAINER", "vesta-demo-smartgrid-app"
+    )
+    DEMO_RUNTIME_DB_CONTAINER: str = os.getenv("DEMO_RUNTIME_DB_CONTAINER", "vesta-demo-smartgrid-db")
+    DEMO_RUNTIME_ATTACKER_CONTAINER: str = os.getenv("DEMO_RUNTIME_ATTACKER_CONTAINER", "vesta-demo-attacker-sim")
+    DEMO_RUNTIME_HONEYPOT_CONTAINER: str = os.getenv("DEMO_RUNTIME_HONEYPOT_CONTAINER", "vesta-demo-honeypot")
+    DEMO_RUNTIME_COLLECTOR_CONTAINER: str = os.getenv("DEMO_RUNTIME_COLLECTOR_CONTAINER", "vesta-demo-collector")
+    DEMO_RUNTIME_PROD_NETWORK: str = os.getenv("DEMO_RUNTIME_PROD_NETWORK", "vesta_demo_prod")
+    DEMO_RUNTIME_QUARANTINE_NETWORK: str = os.getenv(
+        "DEMO_RUNTIME_QUARANTINE_NETWORK", "vesta_demo_quarantine"
+    )
+    DEMO_RUNTIME_DECEPTION_NETWORK: str = os.getenv("DEMO_RUNTIME_DECEPTION_NETWORK", "vesta_demo_deception")
+    DEMO_RUNTIME_HONEYPOT_PORT: int = int(os.getenv("DEMO_RUNTIME_HONEYPOT_PORT", "2222"))
 
     @property
     def URL_DATABASE(self) -> str:

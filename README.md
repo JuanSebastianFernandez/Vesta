@@ -21,8 +21,10 @@ pip install -r requirements.txt
 
 3. Configurar variables de entorno:
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
+
+Si ya existe `.env`, no lo sobrescribas. Ese archivo puede contener credenciales locales reales de PostgreSQL u otros ajustes del entorno.
 
 4. Preparar PostgreSQL:
 - Crear base de datos `vesta_db`.
@@ -304,6 +306,38 @@ Toda acción se persiste en `containment_action_audit` con `who/when/why`, estad
 
 Documentación operativa completa:
 - `defense_containment_honeypot_operations.md`
+
+## Demo Lab VESTA
+Se agregó un laboratorio Docker y endpoints de demo para visualizar prevención, defensa y contención sobre un entorno aislado.
+
+Artefactos principales:
+- `demo/docker-compose.yml`: runtime del laboratorio (`smartgrid-app`, `smartgrid-db`, `attacker-sim`, `collector`, `honeypot`).
+- `demo/smart-grid-repo`: repositorio sintético con perfil `.vesta/dast.profile.json` para DAST enriquecido.
+- `scripts/init_smart_grid_demo_repo.ps1`: inicializa el repo demo con ramas `baseline-clean`, `suspicious-commit` y `runtime-attackable`.
+
+Endpoints demo:
+- `POST /demo/scenarios/{scenario_code}/run`
+- `GET /demo/runtime/assets`
+- `GET /demo/runtime/timeline`
+
+Escenarios soportados:
+- `brute-force`
+- `suspicious-command`
+- `exfiltration`
+- `beaconing`
+- `ransomware`
+
+Comandos sugeridos:
+```powershell
+python scripts/init_smart_grid_demo_repo.ps1
+docker compose -f demo/docker-compose.yml up -d --build
+python scripts/mock_containment_grpc_server.py --host 127.0.0.1 --port 50051
+uvicorn app.main:app --reload
+```
+
+Para ejecutar contención real del lab desde API/UI, enviar `dry_run=false` en:
+- `POST /containment/isolate-node`
+- `POST /containment/deploy-honeypot`
 
 ## Notas
 - Los modelos ML deben estar disponibles en `ml_models/`.

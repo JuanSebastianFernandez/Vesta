@@ -298,6 +298,36 @@ async def analyze_repository_async(
 
 
 @router.get(
+    "/jobs",
+    status_code=status.HTTP_200_OK,
+    summary="List async analysis jobs with optional status filter",
+)
+async def list_analysis_jobs(
+    session: SessionDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    status_filter: str | None = Query(default=None, alias="status"),
+) -> dict[str, Any]:
+    stmt = select(AnalysisJob)
+    if status_filter:
+        stmt = stmt.where(AnalysisJob.status == status_filter.upper())
+
+    all_jobs = list(session.exec(stmt.order_by(desc(AnalysisJob.created_at))).all())
+    total = len(all_jobs)
+    start = (page - 1) * page_size
+    items = all_jobs[start:start + page_size]
+    return {
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total_jobs": total,
+            "total_pages": (total + page_size - 1) // page_size if total > 0 else 0,
+        },
+        "items": [AnalysisJobRead.model_validate(job).model_dump(mode="json") for job in items],
+    }
+
+
+@router.get(
     "/jobs/{job_id}",
     status_code=status.HTTP_200_OK,
     summary="Get status of an async analysis job",

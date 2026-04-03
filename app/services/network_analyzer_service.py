@@ -115,6 +115,113 @@ class NetworkAnalyzerService:
                 "file_field": "file_path",
             },
         },
+        {
+            "code": "PRIVILEGE_ESCALATION_ATTEMPT",
+            "name": "Privilege Escalation Attempt",
+            "description": "Commands or process activity suggesting privilege elevation.",
+            "severity": "CRITICAL",
+            "weight": 1.25,
+            "window_minutes": 15,
+            "threshold": 2,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["COMMAND_EXECUTION", "PROCESS_CREATE", "AUTH_SUCCESS"],
+                "keywords": ["sudo", "chmod 4777", "setuid", "runas", "psexec", "privilege escalation"],
+                "context_flags": ["privilege_escalation", "setuid_binary", "sudo_abuse", "elevated_token"],
+            },
+        },
+        {
+            "code": "CREDENTIAL_ACCESS_PATTERN",
+            "name": "Credential Access Pattern",
+            "description": "Attempts to dump credentials, secret stores or authentication material.",
+            "severity": "CRITICAL",
+            "weight": 1.35,
+            "window_minutes": 20,
+            "threshold": 2,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["FILE_ACCESS", "COMMAND_EXECUTION", "PROCESS_CREATE"],
+                "keywords": ["lsass", "mimikatz", "sam hive", "ntds", "credential dump", "secretsdump"],
+                "context_flags": ["credential_access", "credential_dump", "secret_access", "lsass_access"],
+            },
+        },
+        {
+            "code": "DEFENSE_EVASION_ACTIVITY",
+            "name": "Defense Evasion Activity",
+            "description": "Efforts to disable sensors, security tooling or erase traces.",
+            "severity": "HIGH",
+            "weight": 1.2,
+            "window_minutes": 20,
+            "threshold": 2,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["COMMAND_EXECUTION", "PROCESS_CREATE", "SERVICE_CHANGE"],
+                "keywords": ["disable defender", "stop antivirus", "tamper protection", "clear logs", "kill edr"],
+                "context_flags": ["defense_evasion", "log_clearing", "sensor_disable"],
+            },
+        },
+        {
+            "code": "PERSISTENCE_MECHANISM_CHANGE",
+            "name": "Persistence Mechanism Change",
+            "description": "New autoruns, services or scheduled tasks indicating persistence.",
+            "severity": "HIGH",
+            "weight": 1.15,
+            "window_minutes": 30,
+            "threshold": 2,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["FILE_OPERATION", "REGISTRY_CHANGE", "SERVICE_CHANGE", "COMMAND_EXECUTION"],
+                "keywords": ["autorun", "crontab", "scheduled task", "startup folder", "systemd service"],
+                "context_flags": ["persistence_change", "scheduled_task", "startup_persistence"],
+            },
+        },
+        {
+            "code": "BEACONING_C2_PATTERN",
+            "name": "Beaconing / C2 Pattern",
+            "description": "Repeated low-volume external callbacks to the same destination.",
+            "severity": "CRITICAL",
+            "weight": 1.3,
+            "window_minutes": 20,
+            "threshold": 4,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["NETWORK_CONNECTION", "HTTP_REQUEST"],
+                "keywords": ["beacon", "c2", "callback", "periodic connect"],
+                "context_flags": ["beaconing", "periodic_connection", "c2_indicator"],
+                "destination_field": "destination_ip",
+            },
+        },
+        {
+            "code": "INTERNAL_RECON_SCAN",
+            "name": "Internal Recon / Scan",
+            "description": "Network or command patterns suggesting internal discovery or scanning.",
+            "severity": "HIGH",
+            "weight": 1.15,
+            "window_minutes": 15,
+            "threshold": 5,
+            "min_unique_targets": 3,
+            "extra_params": {
+                "event_types": ["NETWORK_CONNECTION", "PORT_SCAN", "COMMAND_EXECUTION"],
+                "keywords": ["nmap", "masscan", "arp scan", "net view", "service discovery"],
+                "context_flags": ["internal_recon", "port_scan", "service_discovery"],
+                "destination_field": "destination_ip",
+            },
+        },
+        {
+            "code": "WEBSHELL_OR_REMOTE_EXECUTION",
+            "name": "Webshell / Remote Execution",
+            "description": "Command execution indicators tied to HTTP or remote-exec vectors.",
+            "severity": "CRITICAL",
+            "weight": 1.4,
+            "window_minutes": 15,
+            "threshold": 2,
+            "min_unique_targets": 1,
+            "extra_params": {
+                "event_types": ["HTTP_REQUEST", "PROCESS_CREATE", "COMMAND_EXECUTION"],
+                "keywords": ["cmd=whoami", "powershell -enc", "/bin/sh -c", "webshell", "remote exec"],
+                "context_flags": ["webshell_activity", "remote_exec", "command_injection"],
+            },
+        },
     ]
 
     def __init__(self, session: Session, containment_client: ContainmentGrpcClient | None = None):
@@ -509,6 +616,20 @@ class NetworkAnalyzerService:
             return self._eval_data_exfiltration(rule, context_events)
         if code == "RANSOMWARE_BEHAVIORAL_PATTERN":
             return self._eval_ransomware_behavior(rule, context_events)
+        if code == "PRIVILEGE_ESCALATION_ATTEMPT":
+            return self._eval_privilege_escalation(rule, context_events)
+        if code == "CREDENTIAL_ACCESS_PATTERN":
+            return self._eval_credential_access(rule, context_events)
+        if code == "DEFENSE_EVASION_ACTIVITY":
+            return self._eval_defense_evasion(rule, context_events)
+        if code == "PERSISTENCE_MECHANISM_CHANGE":
+            return self._eval_persistence_change(rule, context_events)
+        if code == "BEACONING_C2_PATTERN":
+            return self._eval_beaconing(rule, context_events)
+        if code == "INTERNAL_RECON_SCAN":
+            return self._eval_internal_recon(rule, context_events)
+        if code == "WEBSHELL_OR_REMOTE_EXECUTION":
+            return self._eval_webshell_remote_exec(rule, context_events)
         return None
 
     def _normalize(self, value: str | None) -> str:
@@ -687,6 +808,41 @@ class NetworkAnalyzerService:
         value = context.get(field_name)
         return str(value) if value is not None else None
 
+    def _eval_flag_keyword_rule(
+        self,
+        *,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+        summary_template: str,
+        context_flags_default: list[str],
+        unique_target_builder: Any,
+    ) -> dict[str, Any] | None:
+        params = rule.extra_params or {}
+        event_types = list(params.get("event_types", []))
+        keywords = list(params.get("keywords", []))
+        context_flags = list(params.get("context_flags", context_flags_default))
+
+        matching: list[DefenseLogEvent] = []
+        normalized_event_types = {e.upper() for e in event_types}
+        for event in context_events:
+            keyword_match = self._keyword_match(self._message(event), keywords)
+            type_match = self._normalize(event.event_type) in normalized_event_types
+            context_match = self._event_context_flag(event, context_flags)
+            if keyword_match or (type_match and context_match):
+                matching.append(event)
+        if len(matching) < int(rule.threshold):
+            return None
+
+        unique_targets = max(1, int(unique_target_builder(matching)))
+        if unique_targets < int(rule.min_unique_targets):
+            return None
+        return self._build_match_payload(
+            rule=rule,
+            matching_events=matching,
+            unique_targets=unique_targets,
+            summary=summary_template.format(events=len(matching), targets=unique_targets, window=rule.window_minutes),
+        )
+
     def _eval_data_exfiltration(
         self,
         rule: ThreatPatternRule,
@@ -763,6 +919,134 @@ class NetworkAnalyzerService:
                 f"Ransomware-like behavior detected: {len(matching)} suspicious events "
                 f"over {unique_targets} files/targets."
             ),
+        )
+
+    def _eval_privilege_escalation(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Detected privilege escalation indicators in {events} events.",
+            context_flags_default=["privilege_escalation", "setuid_binary", "sudo_abuse", "elevated_token"],
+            unique_target_builder=lambda matching: len({e.host_id for e in matching if e.host_id}) or 1,
+        )
+
+    def _eval_credential_access(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Credential access pattern detected across {events} events.",
+            context_flags_default=["credential_access", "credential_dump", "secret_access", "lsass_access"],
+            unique_target_builder=lambda matching: len({e.host_id for e in matching if e.host_id}) or 1,
+        )
+
+    def _eval_defense_evasion(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Defense evasion activity observed in {events} correlated events.",
+            context_flags_default=["defense_evasion", "log_clearing", "sensor_disable"],
+            unique_target_builder=lambda matching: len({e.host_id for e in matching if e.host_id}) or 1,
+        )
+
+    def _eval_persistence_change(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Persistence mechanism changes detected in {events} events.",
+            context_flags_default=["persistence_change", "scheduled_task", "startup_persistence"],
+            unique_target_builder=lambda matching: len({e.host_id for e in matching if e.host_id}) or 1,
+        )
+
+    def _eval_beaconing(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        params = rule.extra_params or {}
+        event_types = {e.upper() for e in list(params.get("event_types", []))}
+        keywords = list(params.get("keywords", []))
+        context_flags = list(params.get("context_flags", ["beaconing", "periodic_connection", "c2_indicator"]))
+        destination_field = str(params.get("destination_field", "destination_ip"))
+
+        matching: list[DefenseLogEvent] = []
+        destination_counts: dict[str, int] = {}
+        for event in context_events:
+            destination = self._extract_destination(event, destination_field)
+            type_match = self._normalize(event.event_type) in event_types
+            keyword_match = self._keyword_match(self._message(event), keywords)
+            context_match = self._event_context_flag(event, context_flags)
+            if not (keyword_match or (type_match and context_match)):
+                continue
+            if destination and self._is_external_ip(destination):
+                destination_counts[destination] = destination_counts.get(destination, 0) + 1
+                matching.append(event)
+
+        if len(matching) < int(rule.threshold):
+            return None
+        unique_targets = len(destination_counts)
+        if unique_targets < int(rule.min_unique_targets):
+            return None
+        payload = self._build_match_payload(
+            rule=rule,
+            matching_events=matching,
+            unique_targets=unique_targets,
+            summary=(
+                f"Beaconing/C2 pattern detected with {len(matching)} callbacks "
+                f"to {unique_targets} external destinations."
+            ),
+        )
+        payload["extra"] = {"destination_counts": destination_counts}
+        return payload
+
+    def _eval_internal_recon(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        params = rule.extra_params or {}
+        destination_field = str(params.get("destination_field", "destination_ip"))
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Internal recon/scan observed in {events} events against {targets} targets.",
+            context_flags_default=["internal_recon", "port_scan", "service_discovery"],
+            unique_target_builder=lambda matching: len(
+                {
+                    self._extract_destination(event, destination_field) or event.host_id
+                    for event in matching
+                    if self._extract_destination(event, destination_field) or event.host_id
+                }
+            )
+            or 1,
+        )
+
+    def _eval_webshell_remote_exec(
+        self,
+        rule: ThreatPatternRule,
+        context_events: list[DefenseLogEvent],
+    ) -> dict[str, Any] | None:
+        return self._eval_flag_keyword_rule(
+            rule=rule,
+            context_events=context_events,
+            summary_template="Webshell or remote execution indicators detected in {events} events.",
+            context_flags_default=["webshell_activity", "remote_exec", "command_injection"],
+            unique_target_builder=lambda matching: len({e.host_id for e in matching if e.host_id}) or 1,
         )
 
     def _upsert_alert(self, event: DefenseLogEvent, rule: ThreatPatternRule, match: dict[str, Any]) -> ThreatAlert:

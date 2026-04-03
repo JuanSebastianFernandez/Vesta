@@ -107,6 +107,16 @@ risk_score = (sast_score * 0.60) + (dast_score * 0.40)
 | `status` | `string` | Estado del DAST (`SUCCESS`, `FAILED`, `DISABLED`, etc.). |
 | `message` | `string` | Mensaje de resultado operativo del DAST. |
 | `metrics` | `object` | Métricas del probe dinámico (conteos por tipo de archivo, etc.). |
+| `probe_mode` | `string` | Tipo de probe ejecutado (`generic_probe`, `profiled_probe`). |
+| `detected_languages` | `object` | Conteo de archivos soportados detectados por lenguaje. |
+| `entrypoints_detected` | `array` | Entrypoints potenciales detectados por el probe. |
+| `runtime_commands_attempted` | `array` | Comandos internos intentados por el sandbox durante el DAST. |
+| `process_observations` | `array` | Observaciones de procesos para probes perfilados. |
+| `filesystem_observations` | `object` | Hallazgos sobre rutas sensibles y archivos relevantes. |
+| `http_observations` | `array` | Requests/respuestas HTTP ejecutadas por el probe perfilado. |
+| `evidence` | `array` | Evidencia corta y estructurada recolectada por el DAST. |
+| `risk_signals` | `array` | Señales de riesgo detectadas por patrones runtime/semánticos. |
+| `compile_observations` | `array` | Resultado de compilación segura para archivos Python. |
 | `cap_drop` | `array` | Capacidades Linux removidas del contenedor. |
 | `security_opt` | `array` | Opciones de seguridad del contenedor. |
 | `cpu_quota` | `number` | Cuota de CPU del contenedor. |
@@ -161,4 +171,3 @@ Cada elemento representa un archivo del repositorio.
 - `SUSPICIOUS`: archivo en zona gris; revisar hallazgos y contexto.
 - `MALICIOUS`: archivo con alta evidencia de comportamiento malicioso.
 - `NO_CAPTURE_OUTPUT` en DAST: el DAST corrió, pero no hubo evidencia de red parseable durante la ventana de captura.
-

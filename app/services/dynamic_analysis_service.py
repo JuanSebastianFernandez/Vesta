@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -14,10 +17,12 @@ from app.utilities.logger import logger
 
 class DynamicAnalysisService:
     """
-    DAST MVP service:
-    - Run a short-lived Docker container with hardening flags.
-    - Mount target repository read-only.
-    - Collect minimal execution metadata/logs under timeout control.
+    DAST service for demo and generic repository inspection.
+    Runs a restricted Docker container and executes a Python probe that:
+    - detects supported-language entrypoints,
+    - compiles Python safely,
+    - extracts risk signals and evidence,
+    - optionally runs a profiled runtime flow for the smart-grid demo repo.
     """
 
     def __init__(self) -> None:
@@ -28,9 +33,11 @@ class DynamicAnalysisService:
         self.pids_limit = settings.DAST_PIDS_LIMIT
         self.cpu_quota = settings.DAST_CPU_QUOTA
         self.network_mode = settings.DAST_NETWORK_MODE
+        self.profile_relative_path = settings.DAST_PROFILE_RELATIVE_PATH
         self.tshark_enabled = settings.DAST_TSHARK_ENABLED
         self.tshark_path = settings.DAST_TSHARK_PATH
         self.tshark_interface = settings.DAST_TSHARK_INTERFACE
+        self.probe_script_path = settings.BASE_DIR / "scripts" / "dast_runtime_probe.py"
         self._docker_client: Any = None
 
     def _get_client(self):
@@ -38,8 +45,8 @@ class DynamicAnalysisService:
             return self._docker_client
         try:
             import docker  # lazy import to keep app boot resilient
-        except Exception as e:
-            raise RuntimeError(f"Docker SDK not available: {e}")
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Docker SDK not available: {exc}") from exc
 
         self._docker_client = docker.from_env()
         return self._docker_client
@@ -58,17 +65,8 @@ class DynamicAnalysisService:
             return None, None, "UNAVAILABLE"
 
         pcap_path = os.path.join(tempfile.gettempdir(), f"vesta_dast_{uuid.uuid4().hex}.pcapng")
-
         capture_duration = max(self.timeout_seconds + 5, 10)
-        cmd = [
-            tshark_bin,
-            "-i",
-            self.tshark_interface,
-            "-a",
-            f"duration:{capture_duration}",
-            "-w",
-            pcap_path,
-        ]
+        cmd = [tshark_bin, "-i", self.tshark_interface, "-a", f"duration:{capture_duration}", "-w", pcap_path]
         try:
             proc: subprocess.Popen[str] = subprocess.Popen(
                 cmd,
@@ -76,7 +74,6 @@ class DynamicAnalysisService:
                 stderr=subprocess.DEVNULL,
                 text=True,
             )
-            # Let tshark initialize and fail fast if interface/permissions are invalid.
             time.sleep(0.5)
             if proc.poll() is not None:
                 if os.path.exists(pcap_path):
@@ -95,9 +92,7 @@ class DynamicAnalysisService:
             return None, None, "FAILED_TO_START"
 
     def _stop_tshark_capture(self, proc: subprocess.Popen[str] | None) -> None:
-        if proc is None:
-            return
-        if proc.poll() is not None:
+        if proc is None or proc.poll() is not None:
             return
         try:
             proc.terminate()
@@ -113,13 +108,13 @@ class DynamicAnalysisService:
         if not tshark_bin:
             return []
         cmd: list[str] = [tshark_bin, "-r", pcap_path, "-T", "fields"]
-        for f in fields:
-            cmd.extend(["-e", f])
+        for field in fields:
+            cmd.extend(["-e", field])
         if display_filter:
             cmd.extend(["-Y", display_filter])
         try:
-            out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
-            return [line.strip() for line in out.splitlines() if line.strip()]
+            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+            return [line.strip() for line in output.splitlines() if line.strip()]
         except Exception:
             return []
 
@@ -144,21 +139,13 @@ class DynamicAnalysisService:
             result["status"] = "NO_CAPTURE_OUTPUT"
             return result
 
-        ip_lines = self._run_tshark_read(
-            pcap_path,
-            fields=["ip.dst", "ipv6.dst"],
-            display_filter="ip.dst or ipv6.dst",
-        )
+        ip_lines = self._run_tshark_read(pcap_path, fields=["ip.dst", "ipv6.dst"], display_filter="ip.dst or ipv6.dst")
         ports_lines = self._run_tshark_read(
             pcap_path,
             fields=["tcp.dstport", "udp.dstport"],
             display_filter="tcp.dstport or udp.dstport",
         )
-        dns_lines = self._run_tshark_read(
-            pcap_path,
-            fields=["dns.qry.name"],
-            display_filter="dns.qry.name",
-        )
+        dns_lines = self._run_tshark_read(pcap_path, fields=["dns.qry.name"], display_filter="dns.qry.name")
         syn_lines = self._run_tshark_read(
             pcap_path,
             fields=["tcp.flags.syn"],
@@ -167,22 +154,21 @@ class DynamicAnalysisService:
 
         def _top_counts(values: list[str], limit: int = 5) -> list[dict[str, Any]]:
             counts: dict[str, int] = {}
-            for v in values:
-                for token in [x.strip() for x in v.split("\t") if x.strip()]:
+            for value in values:
+                for token in [item.strip() for item in value.split("\t") if item.strip()]:
                     counts[token] = counts.get(token, 0) + 1
-            ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-            return [{"value": k, "count": v} for k, v in ranked]
+            return [{"value": key, "count": count} for key, count in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]]
 
-        unique_ips = set()
-        for line in ip_lines:
-            for token in [x.strip() for x in line.split("\t") if x.strip()]:
-                unique_ips.add(token)
-
-        unique_ports = set()
-        for line in ports_lines:
-            for token in [x.strip() for x in line.split("\t") if x.strip()]:
-                unique_ports.add(token)
-
+        unique_ips = {
+            token
+            for line in ip_lines
+            for token in [item.strip() for item in line.split("\t") if item.strip()]
+        }
+        unique_ports = {
+            token
+            for line in ports_lines
+            for token in [item.strip() for item in line.split("\t") if item.strip()]
+        }
         result["metrics"] = {
             "packets_total": len(ip_lines),
             "unique_destinations": len(unique_ips),
@@ -205,11 +191,69 @@ class DynamicAnalysisService:
                 return
             time.sleep(0.2)
 
+    def _profile_path(self, repo_path: Path) -> Path:
+        return repo_path / self.profile_relative_path
+
+    def _probe_mode(self, repo_path: Path) -> str:
+        return "profiled_probe" if self._profile_path(repo_path).exists() else "generic_probe"
+
+    def _runtime_network_mode(self, repo_path: Path) -> str:
+        profile_path = self._profile_path(repo_path)
+        if not profile_path.exists():
+            return self.network_mode
+        try:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        except Exception:
+            return self.network_mode
+        return str(profile.get("network_mode") or "bridge")
+
+    def _build_probe_command(self, repo_path: Path) -> list[str]:
+        profile_path = self._profile_path(repo_path)
+        command = ["python", "/probe/dast_runtime_probe.py", "--workspace", "/workspace"]
+        if profile_path.exists():
+            command.extend(["--profile", f"/workspace/{self.profile_relative_path.replace(os.sep, '/')}"])
+        return command
+
+    def _extract_probe_payload(self, logs_text: str) -> dict[str, Any]:
+        lines = [line.strip() for line in logs_text.splitlines() if line.strip()]
+        if not lines:
+            return {}
+        for line in reversed(lines):
+            try:
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+        return {}
+
+    def _wait_for_container_exit(self, container: Any) -> tuple[int, bool]:
+        """
+        Poll container state instead of Docker wait streaming.
+        On Windows named pipes, wait() can raise read timeouts even when the container is still running.
+        Returns (exit_code, timed_out).
+        """
+        deadline = time.monotonic() + self.timeout_seconds
+        while time.monotonic() < deadline:
+            container.reload()
+            state = container.attrs.get("State", {})
+            status = str(state.get("Status", "")).lower()
+            if status in {"exited", "dead"}:
+                try:
+                    return int(state.get("ExitCode", -1)), False
+                except (TypeError, ValueError):
+                    return -1, False
+            time.sleep(0.5)
+        return -1, True
+
     def analyze_repository(self, repo_path: Path) -> dict[str, Any]:
         started_at = datetime.datetime.utcnow()
+        probe_mode = self._probe_mode(repo_path)
+        runtime_network_mode = self._runtime_network_mode(repo_path)
         result: dict[str, Any] = {
             "status": "UNAVAILABLE",
             "engine": "docker",
+            "probe_mode": probe_mode,
             "started_at": started_at.isoformat() + "Z",
             "finished_at": None,
             "duration_seconds": None,
@@ -220,12 +264,21 @@ class DynamicAnalysisService:
             "memory_limit": self.memory_limit,
             "pids_limit": self.pids_limit,
             "cpu_quota": self.cpu_quota,
-            "network_mode": self.network_mode,
+            "network_mode": runtime_network_mode,
             "cap_drop": ["ALL"],
             "security_opt": ["no-new-privileges:true"],
             "message": "",
             "logs_excerpt": "",
             "metrics": {},
+            "detected_languages": {},
+            "entrypoints_detected": [],
+            "runtime_commands_attempted": [],
+            "process_observations": [],
+            "filesystem_observations": {},
+            "http_observations": [],
+            "evidence": [],
+            "risk_signals": [],
+            "compile_observations": [],
             "network_capture": {
                 "status": "DISABLED" if not self.tshark_enabled else "UNAVAILABLE",
                 "pcap_path": "",
@@ -249,6 +302,14 @@ class DynamicAnalysisService:
             result["duration_seconds"] = round((finished_at - started_at).total_seconds(), 3)
             return result
 
+        if not self.probe_script_path.exists():
+            result["status"] = "FAILED"
+            result["message"] = f"Probe script not found: {self.probe_script_path}"
+            finished_at = datetime.datetime.utcnow()
+            result["finished_at"] = finished_at.isoformat() + "Z"
+            result["duration_seconds"] = round((finished_at - started_at).total_seconds(), 3)
+            return result
+
         container = None
         tshark_proc: subprocess.Popen[str] | None = None
         pcap_path: str | None = None
@@ -257,31 +318,19 @@ class DynamicAnalysisService:
             client = self._get_client()
             client.ping()
 
-            command = (
-                "set -eu; "
-                "files=$(find /workspace -type f | wc -l); "
-                "py_files=$(find /workspace -type f -name '*.py' | wc -l); "
-                "js_files=$(find /workspace -type f -name '*.js' | wc -l); "
-                "java_files=$(find /workspace -type f -name '*.java' | wc -l); "
-                "echo files_total=$files; "
-                "echo python_files=$py_files; "
-                "echo javascript_files=$js_files; "
-                "echo java_files=$java_files; "
-                "echo dast_probe=ok"
-            )
-
             tshark_proc, pcap_path, capture_status = self._start_tshark_capture()
             if capture_status == "FAILED_TO_START":
                 logger.warning("[DAST] Tshark capture failed to start.")
             elif capture_status == "UNAVAILABLE":
                 logger.warning("[DAST] Tshark not available; network capture skipped.")
 
-            logger.info(f"[DAST] Launching restricted container for '{repo_path.name}'.")
+            command = self._build_probe_command(repo_path)
+            logger.info("[DAST] Launching %s for '%s'.", probe_mode, repo_path.name)
             container = client.containers.run(
                 image=self.image,
-                command=["sh", "-lc", command],
+                command=command,
                 detach=True,
-                network_mode=self.network_mode,
+                network_mode=runtime_network_mode,
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges:true"],
                 mem_limit=self.memory_limit,
@@ -290,43 +339,56 @@ class DynamicAnalysisService:
                 cpu_quota=self.cpu_quota,
                 user="65534:65534",
                 working_dir="/workspace",
-                volumes={str(repo_path.resolve()): {"bind": "/workspace", "mode": "ro"}},
+                volumes={
+                    str(repo_path.resolve()): {"bind": "/workspace", "mode": "ro"},
+                    str(self.probe_script_path.resolve()): {"bind": "/probe/dast_runtime_probe.py", "mode": "ro"},
+                },
             )
 
-            wait_data = container.wait(timeout=self.timeout_seconds)
-            exit_code = int(wait_data.get("StatusCode", -1))
-            logs_text = container.logs(stdout=True, stderr=True).decode("utf-8", errors="ignore")
-            logs_excerpt = logs_text[:4000]
+            exit_code, timed_out = self._wait_for_container_exit(container)
+            if timed_out:
+                result["status"] = "TIMEOUT"
+                result["message"] = (
+                    f"{probe_mode} exceeded the DAST timeout of {self.timeout_seconds} seconds."
+                )
+                logger.warning("[DAST] Probe timed out for '%s'.", repo_path.name)
+                try:
+                    container.kill()
+                except Exception:
+                    pass
 
-            metrics: dict[str, Any] = {}
-            for line in logs_text.splitlines():
-                if "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip()
-                if value.isdigit():
-                    metrics[key] = int(value)
-                else:
-                    metrics[key] = value
+            logs_text = container.logs(stdout=True, stderr=True).decode("utf-8", errors="ignore")
+            probe_payload = self._extract_probe_payload(logs_text)
 
             result["container_exit_code"] = exit_code
-            result["logs_excerpt"] = logs_excerpt
-            result["metrics"] = metrics
+            result["logs_excerpt"] = logs_text[:4000]
+            result["metrics"] = dict(probe_payload.get("metrics") or {})
+            result["detected_languages"] = dict(probe_payload.get("detected_languages") or {})
+            result["entrypoints_detected"] = list(probe_payload.get("entrypoints_detected") or [])
+            result["runtime_commands_attempted"] = list(probe_payload.get("runtime_commands_attempted") or [])
+            result["process_observations"] = list(probe_payload.get("process_observations") or [])
+            result["filesystem_observations"] = dict(probe_payload.get("filesystem_observations") or {})
+            result["http_observations"] = list(probe_payload.get("http_observations") or [])
+            result["evidence"] = list(probe_payload.get("evidence") or [])
+            result["risk_signals"] = list(probe_payload.get("risk_signals") or [])
+            result["compile_observations"] = list(probe_payload.get("compile_observations") or [])
+
             self._stop_tshark_capture(tshark_proc)
             self._wait_for_pcap(pcap_path)
             result["network_capture"] = self._parse_network_capture(pcap_path, capture_status)
-            if exit_code == 0:
+
+            if timed_out:
+                pass
+            elif exit_code == 0:
                 result["status"] = "SUCCESS"
-                result["message"] = "DAST probe executed successfully in restricted container."
+                result["message"] = f"{probe_mode} executed successfully in restricted container."
             else:
                 result["status"] = "FAILED"
-                result["message"] = "DAST probe container exited with non-zero status."
-
-        except Exception as e:
+                result["message"] = f"{probe_mode} container exited with non-zero status."
+        except Exception as exc:  # noqa: BLE001
             result["status"] = "FAILED"
-            result["message"] = f"DAST execution failed: {e}"
-            logger.exception(f"[DAST] Execution failed for '{repo_path.name}': {e}")
+            result["message"] = f"DAST execution failed: {exc}"
+            logger.exception(f"[DAST] Execution failed for '{repo_path.name}': {exc}")
             if container is not None:
                 try:
                     container.kill()

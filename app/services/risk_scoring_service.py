@@ -30,6 +30,14 @@ class RiskScoringService:
         except (TypeError, ValueError):
             return None
 
+    def _to_int(self, value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
     def _clamp_0_100(self, value: float) -> float:
         return max(0.0, min(100.0, value))
 
@@ -51,9 +59,11 @@ class RiskScoringService:
                 "details": {
                     "reports_total": 0,
                     "reports_with_risk_score": 0,
+                    "findings_total": 0,
                     "status_counts": {},
                     "base_avg_risk_score": 0.0,
                     "status_adjustment": 0.0,
+                    "benign_only_calibration_applied": False,
                 },
             }
 
@@ -67,6 +77,7 @@ class RiskScoringService:
             "UNKNOWN": 0,
         }
         risk_values: list[float] = []
+        findings_total = 0
 
         for item in reports:
             status = str(self._extract_field(item, "security_status", "UNKNOWN")).upper()
@@ -78,6 +89,7 @@ class RiskScoringService:
             risk_score = self._to_float(self._extract_field(item, "risk_score", None))
             if risk_score is not None:
                 risk_values.append(self._clamp_0_100(risk_score))
+            findings_total += self._to_int(self._extract_field(item, "amount_findings", 0), 0)
 
         base_avg = round(sum(risk_values) / len(risk_values), 2) if risk_values else 0.0
         decision_population = (
@@ -90,16 +102,27 @@ class RiskScoringService:
             status_counts["MALICIOUS"] / decision_population if decision_population else 0.0
         )
         status_adjustment = min((suspicious_ratio * 20.0) + (malicious_ratio * 35.0), 20.0)
+        benign_only = (
+            decision_population > 0
+            and status_counts["SUSPICIOUS"] == 0
+            and status_counts["MALICIOUS"] == 0
+        )
 
-        sast_score = round(self._clamp_0_100(base_avg + status_adjustment), 2)
+        if benign_only:
+            benign_score = min((base_avg * 0.5) + (findings_total * 1.25), 35.0)
+            sast_score = round(self._clamp_0_100(benign_score), 2)
+        else:
+            sast_score = round(self._clamp_0_100(base_avg + status_adjustment), 2)
         return {
             "score": sast_score,
             "details": {
                 "reports_total": len(reports),
                 "reports_with_risk_score": len(risk_values),
+                "findings_total": findings_total,
                 "status_counts": status_counts,
                 "base_avg_risk_score": base_avg,
                 "status_adjustment": round(status_adjustment, 2),
+                "benign_only_calibration_applied": benign_only,
             },
         }
 
@@ -121,6 +144,16 @@ class RiskScoringService:
         metrics = network_capture.get("metrics", {})
         if not isinstance(metrics, dict):
             metrics = {}
+        risk_signals = dast_result.get("risk_signals", [])
+        if not isinstance(risk_signals, list):
+            risk_signals = []
+        http_observations = dast_result.get("http_observations", [])
+        if not isinstance(http_observations, list):
+            http_observations = []
+        process_observations = dast_result.get("process_observations", [])
+        if not isinstance(process_observations, list):
+            process_observations = []
+        probe_mode = str(dast_result.get("probe_mode", "generic_probe"))
 
         if dast_status in {"DISABLED", "UNAVAILABLE"}:
             score = 0.0
@@ -152,11 +185,22 @@ class RiskScoringService:
             # DAST executed but capture produced no parsable network evidence.
             score = 10.0
 
+        signal_bonus = min(len(risk_signals) * 7.5, 30.0)
+        http_failures = len([item for item in http_observations if isinstance(item, dict) and item.get("error")])
+        process_bonus = min(len(process_observations) * 3.0, 12.0)
+        if probe_mode == "profiled_probe":
+            process_bonus += 5.0
+        score += signal_bonus + (http_failures * 4.0) + process_bonus
+
         return {
             "score": round(self._clamp_0_100(score), 2),
             "details": {
                 "dast_status": dast_status,
                 "network_capture_status": capture_status,
+                "probe_mode": probe_mode,
+                "risk_signals_count": len(risk_signals),
+                "http_failures": http_failures,
+                "process_observations_count": len(process_observations),
             },
         }
 
@@ -193,4 +237,3 @@ class RiskScoringService:
                 "dast": dast_component["details"],
             },
         }
-

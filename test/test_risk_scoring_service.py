@@ -22,6 +22,7 @@ class TestRiskScoringService(unittest.TestCase):
         self.assertLess(result["risk_score"], 25.0)
         self.assertEqual(result["risk_level"], "LOW")
         self.assertEqual(result["formula_version"], "v1.0.0")
+        self.assertTrue(result["details"]["sast"]["benign_only_calibration_applied"])
 
     def test_critical_risk_for_high_sast_and_failed_dast(self):
         reports = [
@@ -62,7 +63,22 @@ class TestRiskScoringService(unittest.TestCase):
         self.assertGreater(result["components"]["dast_score"], 0.0)
         self.assertIn(result["risk_level"], {"LOW", "MEDIUM", "HIGH", "CRITICAL"})
 
+    def test_benign_only_calibration_caps_high_average_scores(self):
+        reports = [
+            {"security_status": "BENIGN", "risk_score": 80.0, "amount_findings": 0},
+            {"security_status": "BENIGN", "risk_score": 76.0, "amount_findings": 0},
+        ]
+        dast_result = {
+            "status": "TIMEOUT",
+            "probe_mode": "profiled_probe",
+            "network_capture": {"status": "UNAVAILABLE", "metrics": {}},
+        }
+
+        result = self.service.compute_unified_risk(reports, dast_result)
+
+        self.assertLessEqual(result["components"]["sast_score"], 35.0)
+        self.assertLess(result["risk_score"], 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

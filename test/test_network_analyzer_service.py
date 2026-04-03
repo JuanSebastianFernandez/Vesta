@@ -242,6 +242,44 @@ class TestNetworkAnalyzerServiceRules(unittest.TestCase):
         finally:
             settings.DEFENSE_GRPC_TRIGGER_MIN_SCORE = old_threshold
 
+    def test_default_rules_include_demo_expansion(self):
+        codes = {rule["code"] for rule in self.service.DEFAULT_RULES}
+        self.assertEqual(len(codes), 12)
+        self.assertIn("PRIVILEGE_ESCALATION_ATTEMPT", codes)
+        self.assertIn("BEACONING_C2_PATTERN", codes)
+        self.assertIn("WEBSHELL_OR_REMOTE_EXECUTION", codes)
+
+    def test_beaconing_rule_detects_repeated_external_callbacks(self):
+        rule = ThreatPatternRule(
+            code="BEACONING_C2_PATTERN",
+            name="Beaconing / C2 Pattern",
+            description="Repeated callbacks",
+            severity="CRITICAL",
+            weight=1.3,
+            window_minutes=20,
+            threshold=4,
+            min_unique_targets=1,
+            extra_params={
+                "event_types": ["NETWORK_CONNECTION"],
+                "keywords": ["beacon"],
+                "context_flags": ["beaconing"],
+                "destination_field": "destination_ip",
+            },
+        )
+        events = [
+            self._event(
+                event_type="NETWORK_CONNECTION",
+                message="periodic beacon callback",
+                context={"destination_ip": "185.99.1.77", "beaconing": True},
+                offset_seconds=index * 30,
+            )
+            for index in range(4)
+        ]
+        result = self.service._eval_beaconing(rule, events)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["unique_targets"], 1)
+        self.assertEqual(result["evidence_count"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

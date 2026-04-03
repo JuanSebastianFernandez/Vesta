@@ -16,6 +16,7 @@ from app.models.containment_models import (
     IsolateNodeRequest,
     RestoreBackupRequest,
 )
+from app.services.demo_runtime_service import DemoRuntimeService
 from app.utilities.logger import logger
 
 
@@ -25,8 +26,9 @@ class ContainmentService:
     Persists every requested action for full auditability.
     """
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, runtime_service: DemoRuntimeService | None = None):
         self.session = session
+        self.runtime_service = runtime_service or DemoRuntimeService(session=session)
 
     @staticmethod
     def _validate_non_empty(value: str, field_name: str) -> str:
@@ -54,9 +56,9 @@ class ContainmentService:
     @staticmethod
     def _normalize_status(value: str) -> str:
         normalized = (value or "").strip().upper()
-        if normalized not in {"REQUESTED", "SIMULATED_EXECUTED", "FAILED", "ROLLED_BACK", "CANCELED"}:
+        if normalized not in {"REQUESTED", "SIMULATED_EXECUTED", "EXECUTED", "FAILED", "ROLLED_BACK", "CANCELED"}:
             raise ValueError(
-                "Invalid status. Allowed: REQUESTED, SIMULATED_EXECUTED, FAILED, ROLLED_BACK, CANCELED."
+                "Invalid status. Allowed: REQUESTED, SIMULATED_EXECUTED, EXECUTED, FAILED, ROLLED_BACK, CANCELED."
             )
         return normalized
 
@@ -73,6 +75,8 @@ class ContainmentService:
         correlation_id: str | None,
         details: dict[str, Any],
         status: str,
+        execution_mode: str = "STUB",
+        provider: str = "LOCAL_STUB",
         error_message: str | None = None,
     ) -> ContainmentActionAudit:
         now = datetime.datetime.utcnow()
@@ -86,12 +90,12 @@ class ContainmentService:
             reason=reason,
             requested_by=requested_by,
             status=status,
-            execution_mode="STUB",
-            provider="LOCAL_STUB",
+            execution_mode=execution_mode,
+            provider=provider,
             details=details,
             error_message=error_message,
             requested_at=now,
-            executed_at=now if status == "SIMULATED_EXECUTED" else None,
+            executed_at=now if status in {"SIMULATED_EXECUTED", "EXECUTED"} else None,
             updated_at=now,
         )
         self.session.add(record)
@@ -115,6 +119,60 @@ class ContainmentService:
                 "Apply deny-all egress with SOC exception list.",
             ],
         }
+
+        if not payload.dry_run and self.runtime_service.enabled:
+            try:
+                runtime_details = self.runtime_service.isolate_host(host_id)
+                details["runtime"] = runtime_details
+                record = self._persist_action(
+                    action_type="ISOLATE_NODE",
+                    target_type="HOST",
+                    target_value=host_id,
+                    reason=reason,
+                    requested_by=requested_by,
+                    repository_id=payload.repository_id,
+                    source_alert_id=payload.source_alert_id,
+                    correlation_id=payload.correlation_id,
+                    details=details,
+                    status="EXECUTED",
+                    execution_mode="DEMO_DOCKER",
+                    provider=self.runtime_service.provider,
+                )
+                logger.warning(
+                    "[Containment] Demo node isolation host_id=%s requested_by=%s audit_id=%s",
+                    host_id,
+                    requested_by,
+                    record.id,
+                )
+                return ContainmentActionResponse(
+                    audit=ContainmentActionAuditRead.model_validate(record),
+                    message="Node isolated in demo runtime and audited.",
+                    next_steps=[
+                        "Validate the node is attached only to the quarantine network.",
+                        "Review defense alerts linked to this isolation.",
+                        "Use the containment panel to monitor runtime state changes.",
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001
+                details["runtime_error"] = str(exc)
+                record = self._persist_action(
+                    action_type="ISOLATE_NODE",
+                    target_type="HOST",
+                    target_value=host_id,
+                    reason=reason,
+                    requested_by=requested_by,
+                    repository_id=payload.repository_id,
+                    source_alert_id=payload.source_alert_id,
+                    correlation_id=payload.correlation_id,
+                    details=details,
+                    status="FAILED",
+                    execution_mode="DEMO_DOCKER",
+                    provider=self.runtime_service.provider,
+                    error_message=str(exc),
+                )
+                raise ValueError(
+                    f"Demo runtime isolation failed for host '{host_id}'. audit_id={record.id}. reason={exc}"
+                ) from exc
 
         record = self._persist_action(
             action_type="ISOLATE_NODE",
@@ -256,6 +314,66 @@ class ContainmentService:
                 "lateral_movement_traps": True,
             },
         }
+
+        if not payload.dry_run and self.runtime_service.enabled:
+            try:
+                runtime_details = self.runtime_service.deploy_honeypot(
+                    honeypot_profile=profile,
+                    ttl_minutes=ttl_minutes,
+                    network_zone=payload.network_zone,
+                )
+                details["runtime"] = runtime_details
+                details["ttl_minutes"] = runtime_details.get("ttl_minutes", ttl_minutes)
+                details["expires_at"] = runtime_details.get("expires_at")
+                record = self._persist_action(
+                    action_type="DEPLOY_HONEYPOT",
+                    target_type="DECOY",
+                    target_value=decoy_target,
+                    reason=reason,
+                    requested_by=requested_by,
+                    repository_id=payload.repository_id,
+                    source_alert_id=payload.source_alert_id,
+                    correlation_id=payload.correlation_id,
+                    details=details,
+                    status="EXECUTED",
+                    execution_mode="DEMO_DOCKER",
+                    provider=self.runtime_service.provider,
+                )
+                logger.warning(
+                    "[Containment] Demo honeypot deployment target=%s profile=%s audit_id=%s",
+                    decoy_target,
+                    profile,
+                    record.id,
+                )
+                return ContainmentActionResponse(
+                    audit=ContainmentActionAuditRead.model_validate(record),
+                    message="Honeypot deployed in demo runtime and audited.",
+                    next_steps=[
+                        "Use the containment panel to verify the honeypot is active.",
+                        "Link new attacker interactions to defense evidence if needed.",
+                        "Tear down or redeploy the honeypot after TTL expiration.",
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001
+                details["runtime_error"] = str(exc)
+                record = self._persist_action(
+                    action_type="DEPLOY_HONEYPOT",
+                    target_type="DECOY",
+                    target_value=decoy_target,
+                    reason=reason,
+                    requested_by=requested_by,
+                    repository_id=payload.repository_id,
+                    source_alert_id=payload.source_alert_id,
+                    correlation_id=payload.correlation_id,
+                    details=details,
+                    status="FAILED",
+                    execution_mode="DEMO_DOCKER",
+                    provider=self.runtime_service.provider,
+                    error_message=str(exc),
+                )
+                raise ValueError(
+                    f"Demo runtime honeypot deployment failed for '{decoy_target}'. audit_id={record.id}. reason={exc}"
+                ) from exc
 
         record = self._persist_action(
             action_type="DEPLOY_HONEYPOT",
